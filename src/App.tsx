@@ -4,8 +4,10 @@ import {
   FolderOpen,
   Group,
   Loader2,
+  Moon,
   Plus,
   RotateCw,
+  Sun,
   Trash2,
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
@@ -14,6 +16,7 @@ import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 
 type Skin = {
   id: string;
@@ -33,6 +36,21 @@ type SkinLibrary = {
 };
 
 const GROUP_STORAGE_KEY = "talon:groupByChampion";
+const THEME_STORAGE_KEY = "talon:theme";
+
+/** Reads the stored theme preference, falling back to the OS setting. */
+function readInitialTheme(): boolean {
+  const stored = localStorage.getItem(THEME_STORAGE_KEY);
+  if (stored === "dark") return true;
+  if (stored === "light") return false;
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+// Apply the theme class *before* React renders so there's no flash of
+// the wrong palette on first paint.
+if (readInitialTheme()) {
+  document.documentElement.classList.add("dark");
+}
 
 function App() {
   const [library, setLibrary] = useState<SkinLibrary | null>(null);
@@ -40,10 +58,19 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Skin | null>(null);
-  const [groupByChampion, setGroupByChampion] = useState(
-    () => localStorage.getItem(GROUP_STORAGE_KEY) === "1",
-  );
+  const [isDark, setIsDark] = useState(readInitialTheme);
+  const [groupByChampion, setGroupByChampion] = useState(() => {
+    // Default to grouped on first launch; respect the user's explicit
+    // choice on subsequent launches.
+    const stored = localStorage.getItem(GROUP_STORAGE_KEY);
+    return stored === null ? true : stored === "1";
+  });
   const [selectedChampion, setSelectedChampion] = useState<string | null>(null);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+    localStorage.setItem(THEME_STORAGE_KEY, isDark ? "dark" : "light");
+  }, [isDark]);
 
   useEffect(() => {
     localStorage.setItem(GROUP_STORAGE_KEY, groupByChampion ? "1" : "0");
@@ -55,18 +82,21 @@ function App() {
     setSelectedChampion(null);
   }, [groupByChampion]);
 
-  // Sort: enabled skins first, then alphabetical by champion, then by name.
-  // Enabled-first makes active mods easy to find at a glance; toggling a
-  // skin re-sorts immediately because this runs on every library update.
+  // Display order snapshot, refreshed only on library load (not on toggle).
+  // This lets enabled skins cluster at the top on refresh without the jarring
+  // "card flies away" effect that happened when we re-sorted on every toggle.
+  // Toggling a skin flips its state but leaves its position alone until the
+  // next load (window focus, reload button, import, delete, app launch).
+  const displayOrderRef = useRef<string[]>([]);
+
   const sortedSkins = useMemo(() => {
     if (!library) return [] as Skin[];
+    const indexMap = new Map<string, number>();
+    displayOrderRef.current.forEach((id, i) => indexMap.set(id, i));
     return [...library.skins].sort((a, b) => {
-      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-      const champ = a.champion.localeCompare(b.champion, undefined, {
-        sensitivity: "base",
-      });
-      if (champ !== 0) return champ;
-      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      const ia = indexMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
+      const ib = indexMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+      return ia - ib;
     });
   }, [library]);
 
@@ -100,6 +130,18 @@ function App() {
   const load = useCallback(async () => {
     try {
       const result = await invoke<SkinLibrary>("list_skins");
+      // Snapshot the sort order once at load time — enabled first, then
+      // alphabetical by champion, then by skin name. sortedSkins then uses
+      // this snapshot so toggling doesn't shuffle cards around.
+      const snapshot = [...result.skins].sort((a, b) => {
+        if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+        const champ = a.champion.localeCompare(b.champion, undefined, {
+          sensitivity: "base",
+        });
+        if (champ !== 0) return champ;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+      });
+      displayOrderRef.current = snapshot.map((s) => s.id);
       setLibrary(result);
       setError(null);
     } catch (e) {
@@ -120,37 +162,15 @@ function App() {
   }, [load]);
 
   const setEnabled = async (id: string, enabled: boolean) => {
-    if (!library) return;
-    const target = library.skins.find((s) => s.id === id);
-    if (!target) return;
-
-    // Enforce one-skin-per-champion: when turning a skin on, find any other
-    // currently-enabled skins for the same champion and flip them off first.
-    // Disabling a skin is always a solo operation.
-    const conflicts = enabled
-      ? library.skins.filter(
-          (s) => s.id !== id && s.enabled && s.champion === target.champion,
-        )
-      : [];
-    const conflictIds = new Set(conflicts.map((s) => s.id));
-
     setLibrary((cur) =>
       cur
         ? {
             ...cur,
-            skins: cur.skins.map((s) => {
-              if (s.id === id) return { ...s, enabled };
-              if (conflictIds.has(s.id)) return { ...s, enabled: false };
-              return s;
-            }),
+            skins: cur.skins.map((s) => (s.id === id ? { ...s, enabled } : s)),
           }
         : cur,
     );
-
     try {
-      for (const c of conflicts) {
-        await invoke("set_skin_enabled", { id: c.id, enabled: false });
-      }
       await invoke("set_skin_enabled", { id, enabled });
     } catch (e) {
       setError(String(e));
@@ -297,6 +317,15 @@ function App() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => setIsDark((v) => !v)}
+              aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+              title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            >
+              {isDark ? <Sun /> : <Moon />}
+            </Button>
             <Button variant="outline" onClick={handleOpenFolder}>
               <FolderOpen />
               Open folder
@@ -511,7 +540,12 @@ function SkinCard({
   onDelete: () => void;
 }) {
   return (
-    <Card className="overflow-hidden p-0 gap-0">
+    <Card
+      className={cn(
+        "overflow-hidden p-0 gap-0 transition-all",
+        skin.enabled && "ring-2 ring-primary",
+      )}
+    >
       <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {skin.preview ? (
           <img
