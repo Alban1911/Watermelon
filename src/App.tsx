@@ -45,10 +45,24 @@ function App() {
     setSelectedChampion(null);
   }, [groupByChampion]);
 
+  // Sort: enabled skins first, then alphabetical by champion, then by name.
+  // Enabled-first makes active mods easy to find at a glance; toggling a
+  // skin re-sorts immediately because this runs on every library update.
+  const sortedSkins = useMemo(() => {
+    if (!library) return [] as Skin[];
+    return [...library.skins].sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      const champ = a.champion.localeCompare(b.champion, undefined, {
+        sensitivity: "base",
+      });
+      if (champ !== 0) return champ;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    });
+  }, [library]);
+
   const skinsByChampion = useMemo(() => {
     const map = new Map<string, Skin[]>();
-    if (!library) return map;
-    for (const skin of library.skins) {
+    for (const skin of sortedSkins) {
       const bucket = map.get(skin.champion);
       if (bucket) {
         bucket.push(skin);
@@ -57,7 +71,7 @@ function App() {
       }
     }
     return map;
-  }, [library]);
+  }, [sortedSkins]);
 
   const championGroups = useMemo(() => {
     return Array.from(skinsByChampion.entries()).sort((a, b) =>
@@ -300,7 +314,7 @@ function App() {
               </div>
             ) : (
               <div className="grid gap-4 [grid-template-columns:repeat(auto-fill,minmax(200px,1fr))]">
-                {(selectedChampion ? drilledSkins : library.skins).map(
+                {(selectedChampion ? drilledSkins : sortedSkins).map(
                   (skin) => (
                     <SkinCard
                       key={skin.id}
