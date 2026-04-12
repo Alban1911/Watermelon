@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use super::fantome;
+use super::preview;
 use super::state::SkinState;
 
 #[derive(Debug, Clone, Serialize)]
@@ -14,6 +15,7 @@ pub struct SkinEntry {
     pub author: Option<String>,
     pub version: Option<String>,
     pub description: Option<String>,
+    pub preview: Option<String>,
     pub enabled: bool,
 }
 
@@ -27,7 +29,16 @@ pub struct SkinLibrary {
 /// Real metadata comes from parsing `META/info.json` inside each archive; when
 /// parsing fails or a field is missing, the filename stem is used as a fallback
 /// so broken files still appear in the list and can be diagnosed.
-pub fn scan(skins_dir: &Path, state: &SkinState) -> Result<Vec<SkinEntry>> {
+///
+/// A PNG preview is generated (or reused from cache) for each skin by
+/// extracting the largest DDS entry from the inner WAD. Preview generation is
+/// best-effort: any failure silently leaves `preview = None` so the list
+/// still loads.
+pub fn scan(
+    skins_dir: &Path,
+    previews_dir: &Path,
+    state: &SkinState,
+) -> Result<Vec<SkinEntry>> {
     if !skins_dir.exists() {
         fs::create_dir_all(skins_dir).context("creating skins directory")?;
     }
@@ -59,6 +70,16 @@ pub fn scan(skins_dir: &Path, state: &SkinState) -> Result<Vec<SkinEntry>> {
         let version = meta.as_ref().and_then(|m| m.version.clone());
         let description = meta.as_ref().and_then(|m| m.description.clone());
 
+        let preview = preview::cached_or_extract(
+            &path,
+            previews_dir,
+            &stem,
+            meta.as_ref().and_then(|m| m.champion.as_deref()),
+        )
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
+
         entries.push(SkinEntry {
             id: stem.clone(),
             name,
@@ -66,6 +87,7 @@ pub fn scan(skins_dir: &Path, state: &SkinState) -> Result<Vec<SkinEntry>> {
             author,
             version,
             description,
+            preview,
             enabled: state.is_enabled(&stem),
         });
     }

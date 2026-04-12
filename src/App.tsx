@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FolderOpen, Plus, RotateCw } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ type Skin = {
   author: string | null;
   version: string | null;
   description: string | null;
+  preview: string | null;
   enabled: boolean;
 };
 
@@ -211,9 +212,9 @@ function App() {
             {library.skins.length === 0 ? (
               <EmptyState onImport={handleImport} />
             ) : (
-              <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-4 md:grid-cols-3">
                 {library.skins.map((skin) => (
-                  <SkinRow
+                  <SkinCard
                     key={skin.id}
                     skin={skin}
                     onToggle={(enabled) => setEnabled(skin.id, enabled)}
@@ -239,7 +240,7 @@ function App() {
   );
 }
 
-function SkinRow({
+function SkinCard({
   skin,
   onToggle,
 }: {
@@ -247,8 +248,17 @@ function SkinRow({
   onToggle: (enabled: boolean) => void;
 }) {
   return (
-    <Card>
-      <CardContent className="flex items-center justify-between gap-4">
+    <Card className="overflow-hidden p-0 gap-0">
+      <div className="aspect-square w-full overflow-hidden bg-muted">
+        {skin.preview ? (
+          <img
+            src={convertFileSrc(skin.preview)}
+            alt=""
+            className="h-full w-full object-cover object-[center_25%]"
+          />
+        ) : null}
+      </div>
+      <div className="flex items-center gap-2 p-3">
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium capitalize">{skin.name}</div>
           <div className="truncate text-xs text-muted-foreground">
@@ -262,7 +272,7 @@ function SkinRow({
           </div>
         </div>
         <Switch checked={skin.enabled} onCheckedChange={onToggle} />
-      </CardContent>
+      </div>
     </Card>
   );
 }

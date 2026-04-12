@@ -1,5 +1,6 @@
 mod lcu;
 mod skins;
+mod wad;
 
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
@@ -8,41 +9,50 @@ use tauri_plugin_opener::OpenerExt;
 use skins::library::{self, SkinLibrary};
 use skins::state::SkinState;
 
-fn resolve_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+struct AppPaths {
+    skins_dir: PathBuf,
+    state_path: PathBuf,
+    previews_dir: PathBuf,
+}
+
+fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let skins_dir = data_dir.join("skins");
-    let state_path = data_dir.join("state.json");
-    Ok((skins_dir, state_path))
+    Ok(AppPaths {
+        skins_dir: data_dir.join("skins"),
+        state_path: data_dir.join("state.json"),
+        previews_dir: data_dir.join("previews"),
+    })
 }
 
 #[tauri::command]
 fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
-    let (skins_dir, state_path) = resolve_paths(&app)?;
-    let state = SkinState::load(&state_path).map_err(|e| e.to_string())?;
-    let skins = library::scan(&skins_dir, &state).map_err(|e| e.to_string())?;
+    let paths = resolve_paths(&app)?;
+    let state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
+    let skins = library::scan(&paths.skins_dir, &paths.previews_dir, &state)
+        .map_err(|e| e.to_string())?;
     Ok(SkinLibrary {
-        dir: skins_dir.to_string_lossy().into_owned(),
+        dir: paths.skins_dir.to_string_lossy().into_owned(),
         skins,
     })
 }
 
 #[tauri::command]
 fn set_skin_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
-    let (_, state_path) = resolve_paths(&app)?;
-    let mut state = SkinState::load(&state_path).map_err(|e| e.to_string())?;
+    let paths = resolve_paths(&app)?;
+    let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     state.set(id, enabled);
-    state.save(&state_path).map_err(|e| e.to_string())?;
+    state.save(&paths.state_path).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn open_skins_folder(app: AppHandle) -> Result<(), String> {
-    let (skins_dir, _) = resolve_paths(&app)?;
+    let paths = resolve_paths(&app)?;
     // Make sure the folder exists before trying to open it — on a fresh
     // install the app data dir may not yet be created.
-    std::fs::create_dir_all(&skins_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
     app.opener()
-        .open_path(skins_dir.to_string_lossy().to_string(), None::<&str>)
+        .open_path(paths.skins_dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
 }
 
@@ -70,8 +80,8 @@ fn pick_dest(skins_dir: &std::path::Path, filename: &str) -> PathBuf {
 
 #[tauri::command]
 fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
-    let (skins_dir, _) = resolve_paths(&app)?;
-    std::fs::create_dir_all(&skins_dir).map_err(|e| e.to_string())?;
+    let paths = resolve_paths(&app)?;
+    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
 
     let source_path = PathBuf::from(&source);
     if !source_path.is_file() {
@@ -85,7 +95,7 @@ fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| "invalid file name".to_string())?;
-    let dest = pick_dest(&skins_dir, file_name);
+    let dest = pick_dest(&paths.skins_dir, file_name);
 
     std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
     Ok(())
@@ -97,14 +107,14 @@ fn import_skin_bytes(
     filename: String,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let (skins_dir, _) = resolve_paths(&app)?;
-    std::fs::create_dir_all(&skins_dir).map_err(|e| e.to_string())?;
+    let paths = resolve_paths(&app)?;
+    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
 
     if !filename.to_lowercase().ends_with(".fantome") {
         return Err("file must have .fantome extension".into());
     }
 
-    let dest = pick_dest(&skins_dir, &filename);
+    let dest = pick_dest(&paths.skins_dir, &filename);
     std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
     Ok(())
 }
