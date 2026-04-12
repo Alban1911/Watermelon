@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, FolderOpen, Group, Plus, RotateCw } from "lucide-react";
+import {
+  ArrowLeft,
+  FolderOpen,
+  Group,
+  Loader2,
+  Plus,
+  RotateCw,
+} from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
@@ -30,6 +37,7 @@ function App() {
   const [library, setLibrary] = useState<SkinLibrary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
   const [groupByChampion, setGroupByChampion] = useState(
     () => localStorage.getItem(GROUP_STORAGE_KEY) === "1",
   );
@@ -165,6 +173,7 @@ function App() {
         setError("Only .fantome files can be imported.");
         return;
       }
+      setIsImporting(true);
       try {
         for (const file of fantomes) {
           const bytes = new Uint8Array(await file.arrayBuffer());
@@ -176,6 +185,8 @@ function App() {
         await load();
       } catch (e) {
         setError(String(e));
+      } finally {
+        setIsImporting(false);
       }
     },
     [load],
@@ -189,10 +200,15 @@ function App() {
       });
       if (!selected) return;
       const paths = Array.isArray(selected) ? selected : [selected];
-      for (const path of paths) {
-        await invoke("import_skin", { source: path });
+      setIsImporting(true);
+      try {
+        for (const path of paths) {
+          await invoke("import_skin", { source: path });
+        }
+        await load();
+      } finally {
+        setIsImporting(false);
       }
-      await load();
     } catch (e) {
       setError(String(e));
     }
@@ -351,13 +367,22 @@ function App() {
         )}
       </main>
 
-      {isDragging && (
+      {isDragging && !isImporting && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-primary/10 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2 rounded-xl bg-card px-8 py-6 text-center ring-2 ring-primary/50">
             <Plus className="size-6" />
             <p className="text-sm font-medium">
               Drop .fantome files to import
             </p>
+          </div>
+        </div>
+      )}
+
+      {isImporting && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/40 backdrop-blur-md">
+          <div className="flex flex-col items-center gap-3 rounded-xl bg-card px-10 py-7 ring-2 ring-border shadow-lg">
+            <Loader2 className="size-8 animate-spin text-primary" />
+            <p className="text-sm font-medium">Importing skin…</p>
           </div>
         </div>
       )}
