@@ -38,6 +38,23 @@ type SkinLibrary = {
 const GROUP_STORAGE_KEY = "talon:groupByChampion";
 const THEME_STORAGE_KEY = "talon:theme";
 
+/** Computes the "enabled first, then alphabetical by champion, then by
+ *  skin name" ordering as a flat array of skin IDs. Used as a display
+ *  snapshot so sorting only happens at navigation breakpoints, not on
+ *  every toggle. */
+function computeSortOrder(skins: Skin[]): string[] {
+  return [...skins]
+    .sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      const champ = a.champion.localeCompare(b.champion, undefined, {
+        sensitivity: "base",
+      });
+      if (champ !== 0) return champ;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    })
+    .map((s) => s.id);
+}
+
 /** Reads the stored theme preference, falling back to the OS setting. */
 function readInitialTheme(): boolean {
   const stored = localStorage.getItem(THEME_STORAGE_KEY);
@@ -82,23 +99,25 @@ function App() {
     setSelectedChampion(null);
   }, [groupByChampion]);
 
-  // Display order snapshot, refreshed only on library load (not on toggle).
-  // This lets enabled skins cluster at the top on refresh without the jarring
-  // "card flies away" effect that happened when we re-sorted on every toggle.
-  // Toggling a skin flips its state but leaves its position alone until the
-  // next load (window focus, reload button, import, delete, app launch).
-  const displayOrderRef = useRef<string[]>([]);
+  // Display order snapshot — an array of skin IDs in the order we want to
+  // render them. Refreshed only at "natural breakpoints" (library load,
+  // view mode toggle, champion drill-in/out). Toggling a skin's enabled
+  // flag flips its state but leaves its position alone until the next
+  // breakpoint, which avoids the jarring "card flies away on click" effect
+  // while still paying off the "enabled first" intuition on every
+  // navigation step.
+  const [displayOrder, setDisplayOrder] = useState<string[]>([]);
 
   const sortedSkins = useMemo(() => {
     if (!library) return [] as Skin[];
     const indexMap = new Map<string, number>();
-    displayOrderRef.current.forEach((id, i) => indexMap.set(id, i));
+    displayOrder.forEach((id, i) => indexMap.set(id, i));
     return [...library.skins].sort((a, b) => {
       const ia = indexMap.get(a.id) ?? Number.MAX_SAFE_INTEGER;
       const ib = indexMap.get(b.id) ?? Number.MAX_SAFE_INTEGER;
       return ia - ib;
     });
-  }, [library]);
+  }, [library, displayOrder]);
 
   const skinsByChampion = useMemo(() => {
     const map = new Map<string, Skin[]>();
@@ -130,24 +149,24 @@ function App() {
   const load = useCallback(async () => {
     try {
       const result = await invoke<SkinLibrary>("list_skins");
-      // Snapshot the sort order once at load time — enabled first, then
-      // alphabetical by champion, then by skin name. sortedSkins then uses
-      // this snapshot so toggling doesn't shuffle cards around.
-      const snapshot = [...result.skins].sort((a, b) => {
-        if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-        const champ = a.champion.localeCompare(b.champion, undefined, {
-          sensitivity: "base",
-        });
-        if (champ !== 0) return champ;
-        return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-      });
-      displayOrderRef.current = snapshot.map((s) => s.id);
+      setDisplayOrder(computeSortOrder(result.skins));
       setLibrary(result);
       setError(null);
     } catch (e) {
       setError(String(e));
     }
   }, []);
+
+  // Re-snapshot the sort order whenever the user changes what they're
+  // looking at — view mode swap (flat ↔ grouped) or champion drill-in/out.
+  // The library itself hasn't changed, so this is purely a re-sort: any
+  // skins toggled since the last breakpoint now cluster to the top of the
+  // view they just navigated into.
+  useEffect(() => {
+    if (!library) return;
+    setDisplayOrder(computeSortOrder(library.skins));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupByChampion, selectedChampion]);
 
   useEffect(() => {
     load();
