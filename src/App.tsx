@@ -110,15 +110,37 @@ function App() {
   }, [load]);
 
   const setEnabled = async (id: string, enabled: boolean) => {
+    if (!library) return;
+    const target = library.skins.find((s) => s.id === id);
+    if (!target) return;
+
+    // Enforce one-skin-per-champion: when turning a skin on, find any other
+    // currently-enabled skins for the same champion and flip them off first.
+    // Disabling a skin is always a solo operation.
+    const conflicts = enabled
+      ? library.skins.filter(
+          (s) => s.id !== id && s.enabled && s.champion === target.champion,
+        )
+      : [];
+    const conflictIds = new Set(conflicts.map((s) => s.id));
+
     setLibrary((cur) =>
       cur
         ? {
             ...cur,
-            skins: cur.skins.map((s) => (s.id === id ? { ...s, enabled } : s)),
+            skins: cur.skins.map((s) => {
+              if (s.id === id) return { ...s, enabled };
+              if (conflictIds.has(s.id)) return { ...s, enabled: false };
+              return s;
+            }),
           }
         : cur,
     );
+
     try {
+      for (const c of conflicts) {
+        await invoke("set_skin_enabled", { id: c.id, enabled: false });
+      }
       await invoke("set_skin_enabled", { id, enabled });
     } catch (e) {
       setError(String(e));
