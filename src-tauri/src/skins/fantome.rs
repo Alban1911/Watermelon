@@ -19,8 +19,12 @@ struct InfoJson {
     version: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    // Older cslol-manager mods use `Heroes`, newer ones use `Champions`.
+    // Both map to PascalCase via `rename_all`, so we accept either.
     #[serde(default)]
     heroes: Vec<String>,
+    #[serde(default)]
+    champions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,8 +48,9 @@ pub fn read(path: &Path) -> Result<FantomeMetadata> {
     let champion_from_wad = find_champion_from_wad_entries(&mut zip);
 
     let champion = info
-        .heroes
+        .champions
         .first()
+        .or_else(|| info.heroes.first())
         .cloned()
         .filter(|s| !s.is_empty())
         .or(champion_from_wad);
@@ -73,11 +78,18 @@ fn find_champion_from_wad_entries(zip: &mut ZipArchive<File>) -> Option<String> 
             Ok(file) => file.name().to_string(),
             Err(_) => continue,
         };
-        if let Some(stripped) = name.strip_prefix("WAD/") {
-            if let Some(champ) = stripped.strip_suffix(".wad.client") {
-                if !champ.is_empty() {
-                    return Some(champ.to_string());
-                }
+        let Some(stripped) = name.strip_prefix("WAD/") else { continue };
+        // Packed form: "WAD/Hecarim.wad.client" — the entry IS the WAD file.
+        if let Some(champ) = stripped.strip_suffix(".wad.client") {
+            if !champ.is_empty() {
+                return Some(champ.to_string());
+            }
+        }
+        // Unpacked form: "WAD/Vi.wad.client/assets/..." — the WAD is a
+        // directory prefix, contents stored as individual zip entries.
+        if let Some((champ, _)) = stripped.split_once(".wad.client/") {
+            if !champ.is_empty() {
+                return Some(champ.to_string());
             }
         }
     }

@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
+use ltk_texture::{Dds, Tex, Texture};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
@@ -8,21 +9,25 @@ use zip::ZipArchive;
 use crate::wad::{CompressionType, WadReader};
 
 const DDS_MAGIC: [u8; 4] = *b"DDS ";
+const TEX_MAGIC: [u8; 4] = *b"TEX\0";
 const DDRAGON_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Produces (or refreshes) a PNG preview for a `.fantome` file and returns
 /// its path.
 ///
-/// Tries two sources in order:
-///   1. **Inside the mod** — find the largest DDS entry in the inner WAD
-///      that's closest to 16:9, decode with `image_dds`, write PNG.
-///   2. **Data Dragon fallback** — if the mod ships no usable DDS (e.g.
-///      texture-only mods for newer champions where Riot moved to .tex),
-///      fetch the base champion splash from ddragon.leagueoflegends.com
-///      using the champion name and re-encode as PNG.
-///
-/// Returns `Ok(None)` only if both sources fail; the caller treats that as
-/// "no preview available" and renders a placeholder.
+/// Tries three sources in order:
+///   1. **Splash texture inside the WAD** — walk every DDS/TEX entry
+///      (packed or unpacked layout), parse headers for dimensions, score
+///      by aspect-ratio closeness to 16:9, pick the best match and decode
+///      via `ltk_texture`. Handles both Riot's native `.tex` format and
+///      standard DDS with one unified pipeline. This is the authoritative
+///      in-game asset when the mod ships one.
+///   2. **`META/image.png`** — some mod creators bundle a pre-rendered
+///      preview PNG. Used as a fallback when the mod has no splash-shaped
+///      texture in its WAD, because the bundled image is often a square
+///      icon rather than the actual splash.
+///   3. **Data Dragon fallback** — fetch the base champion loading
+///      portrait from ddragon.leagueoflegends.com using the champion name.
 pub fn cached_or_extract(
     fantome_path: &Path,
     previews_dir: &Path,
@@ -37,8 +42,13 @@ pub fn cached_or_extract(
 
     std::fs::create_dir_all(previews_dir).context("creating previews dir")?;
 
-    if let Some(dds_bytes) = extract_largest_dds(fantome_path)? {
-        write_dds_as_png(&dds_bytes, &dest)?;
+    if let Some(texture_bytes) = find_best_splash_texture(fantome_path)? {
+        write_texture_as_png(&texture_bytes, &dest)?;
+        return Ok(Some(dest));
+    }
+
+    if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
+        std::fs::write(&dest, &bytes).context("writing META/image.png to cache")?;
         return Ok(Some(dest));
     }
 
@@ -63,82 +73,151 @@ fn cache_is_fresh(fantome_path: &Path, cached: &Path) -> bool {
     cache_mtime >= fantome_mtime
 }
 
-/// Opens the `.fantome` archive, pulls the inner WAD, and returns the
-/// decompressed bytes of the best splash-art DDS candidate.
-///
-/// Heuristic: decompress every entry, parse each DDS header for dimensions,
-/// and score by aspect-ratio closeness to 16:9 (the portrait 9:16 form
-/// collapses to the same score because we normalize with max/min). Model
-/// diffuse/normal maps are square (ratio 1.0, deviation ~0.78) and score
-/// badly; splash and loadscreen art is typically 1280×720, 1215×717, or
-/// 308×560 and scores near zero. Ties broken by pixel count (bigger wins).
-/// Candidates below 50 000 pixels are excluded to skip tiny icons, with a
-/// fallback to the single largest DDS if nothing meets the bar.
-fn extract_largest_dds(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
+/// Looks for a `META/image.png` entry inside the `.fantome` archive and
+/// returns its raw bytes. Some cslol-manager mods bundle a pre-rendered
+/// preview image as part of the mod metadata — when present it's the best
+/// possible preview since the mod creator chose it specifically.
+fn read_meta_image(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
+    let file = File::open(fantome_path).context("open .fantome")?;
+    let mut zip = ZipArchive::new(file).context("read zip")?;
+    let mut entry = match zip.by_name("META/image.png") {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+    let mut buf = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut buf).context("read META/image.png")?;
+    Ok(Some(buf))
+}
+
+/// Finds the best splash-art texture (DDS or TEX) inside a `.fantome`,
+/// handling both packed (single `.wad.client` binary) and unpacked
+/// (`WAD/Champion.wad.client/...` directory prefix) layouts.
+fn find_best_splash_texture(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
+    let candidates = collect_texture_candidates(fantome_path)?;
+    Ok(pick_best_splash(&candidates))
+}
+
+fn collect_texture_candidates(fantome_path: &Path) -> Result<Vec<Vec<u8>>> {
     let file = File::open(fantome_path).context("open .fantome")?;
     let mut zip = ZipArchive::new(file).context("read zip")?;
 
-    let mut wad_bytes: Option<Vec<u8>> = None;
+    if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
+        return Ok(collect_textures_from_packed_wad(&wad_bytes));
+    }
+    Ok(collect_textures_from_unpacked_zip(&mut zip))
+}
+
+/// If the archive contains a single packed `WAD/X.wad.client` binary
+/// (no further path components), returns its bytes.
+fn read_packed_wad(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>>> {
+    let mut packed_idx: Option<usize> = None;
     for i in 0..zip.len() {
-        let mut entry = zip.by_index(i).context("zip entry")?;
-        let name = entry.name().to_string();
-        if name.starts_with("WAD/") && name.ends_with(".wad.client") {
-            let mut buf = Vec::with_capacity(entry.size() as usize);
-            entry.read_to_end(&mut buf).context("read WAD")?;
-            wad_bytes = Some(buf);
+        let is_packed = match zip.by_index(i) {
+            Ok(entry) => entry
+                .name()
+                .strip_prefix("WAD/")
+                .map(|s| s.ends_with(".wad.client") && !s.contains('/'))
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        if is_packed {
+            packed_idx = Some(i);
             break;
         }
     }
-    let wad_bytes = match wad_bytes {
-        Some(b) => b,
-        None => return Ok(None),
+
+    let Some(i) = packed_idx else { return Ok(None) };
+    let mut entry = zip.by_index(i).context("re-open packed WAD")?;
+    let mut buf = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut buf).context("read packed WAD")?;
+    Ok(Some(buf))
+}
+
+fn collect_textures_from_packed_wad(wad_bytes: &[u8]) -> Vec<Vec<u8>> {
+    let reader = match WadReader::new(wad_bytes) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
     };
+    let mut out = Vec::new();
+    for entry in reader.entries() {
+        if !matches!(
+            entry.compression,
+            CompressionType::Zstd | CompressionType::Raw
+        ) {
+            continue;
+        }
+        let Ok(decoded) = reader.extract(entry) else { continue };
+        if is_texture_magic(&decoded) {
+            out.push(decoded);
+        }
+    }
+    out
+}
 
-    let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
-
-    let mut entries: Vec<_> = reader
-        .entries()
-        .iter()
-        .filter(|e| {
-            matches!(
-                e.compression,
-                CompressionType::Zstd | CompressionType::Raw
-            )
+/// Walks an unpacked `.fantome` layout where WAD contents are stored as
+/// individual zip entries under `WAD/{Champion}.wad.client/...`.
+fn collect_textures_from_unpacked_zip(zip: &mut ZipArchive<File>) -> Vec<Vec<u8>> {
+    let names: Vec<String> = (0..zip.len())
+        .map(|i| {
+            zip.by_index(i)
+                .map(|e| e.name().to_string())
+                .unwrap_or_default()
         })
         .collect();
-    entries.sort_by_key(|e| std::cmp::Reverse(e.size_decompressed));
 
-    struct Candidate {
-        bytes: Vec<u8>,
-        deviation: f64,
-        pixels: u64,
+    let mut out = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let is_wad_content = name
+            .strip_prefix("WAD/")
+            .and_then(|s| s.split_once(".wad.client/"))
+            .is_some();
+        if !is_wad_content {
+            continue;
+        }
+        let Ok(mut entry) = zip.by_index(i) else { continue };
+        let mut buf = Vec::new();
+        if entry.read_to_end(&mut buf).is_err() {
+            continue;
+        }
+        if is_texture_magic(&buf) {
+            out.push(buf);
+        }
     }
+    out
+}
+
+fn is_texture_magic(bytes: &[u8]) -> bool {
+    bytes.len() >= 4 && (bytes[..4] == DDS_MAGIC || bytes[..4] == TEX_MAGIC)
+}
+
+struct ScoredCandidate<'a> {
+    bytes: &'a [u8],
+    deviation: f64,
+    pixels: u64,
+}
+
+/// Scores candidates by aspect-ratio closeness to 16:9 and hard-rejects
+/// anything above 0.15 deviation — keeps us from picking 2:1 banner
+/// textures or 1:1 model diffuses when the mod ships no real splash.
+/// Uses the texture header (cheap) for dimensions, not the decoded pixels.
+fn pick_best_splash(candidates: &[Vec<u8>]) -> Option<Vec<u8>> {
     const SPLASH_RATIO: f64 = 16.0 / 9.0;
+    const MAX_DEVIATION: f64 = 0.15;
     const MIN_PIXELS: u64 = 50_000;
 
-    let mut scored: Vec<Candidate> = Vec::new();
-    for entry in &entries {
-        let decoded = match reader.extract(entry) {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        let (width, height) = match dds_dimensions(&decoded) {
-            Some(wh) => wh,
-            None => continue,
-        };
+    let mut scored: Vec<ScoredCandidate> = Vec::new();
+    for bytes in candidates {
+        let Some(texture) = parse_texture(bytes) else { continue };
+        let width = texture.width();
+        let height = texture.height();
         if width == 0 || height == 0 {
             continue;
         }
         let max = width.max(height) as f64;
         let min = width.min(height) as f64;
-        let ratio = max / min;
-        let deviation = (ratio - SPLASH_RATIO).abs();
+        let deviation = (max / min - SPLASH_RATIO).abs();
         let pixels = (width as u64) * (height as u64);
-        scored.push(Candidate {
-            bytes: decoded,
-            deviation,
-            pixels,
-        });
+        scored.push(ScoredCandidate { bytes, deviation, pixels });
     }
 
     scored.sort_by(|a, b| {
@@ -148,21 +227,44 @@ fn extract_largest_dds(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
             .then_with(|| b.pixels.cmp(&a.pixels))
     });
 
-    let winner = scored
-        .iter()
-        .find(|c| c.pixels >= MIN_PIXELS)
-        .or_else(|| scored.first());
+    scored
+        .into_iter()
+        .find(|c| c.deviation <= MAX_DEVIATION && c.pixels >= MIN_PIXELS)
+        .map(|c| c.bytes.to_vec())
+}
 
-    Ok(winner.map(|c| c.bytes.clone()))
+/// Parses a byte slice as either a DDS or a TEX texture by sniffing the
+/// first 4 magic bytes. Returns `None` for anything else or if the header
+/// is malformed.
+fn parse_texture(bytes: &[u8]) -> Option<Texture> {
+    let magic: [u8; 4] = bytes.get(..4)?.try_into().ok()?;
+    let mut cursor = Cursor::new(bytes);
+    match magic {
+        DDS_MAGIC => Dds::from_reader(&mut cursor).ok().map(Texture::from),
+        TEX_MAGIC => Tex::from_reader(&mut cursor).ok().map(Texture::from),
+        _ => None,
+    }
+}
+
+/// Decodes a DDS or TEX byte slice and writes the result as a PNG at `dest`.
+fn write_texture_as_png(bytes: &[u8], dest: &Path) -> Result<()> {
+    let texture = parse_texture(bytes).ok_or_else(|| anyhow!("not a DDS or TEX file"))?;
+    let surface = texture
+        .decode_mipmap(0)
+        .map_err(|e| anyhow!("decode mipmap: {e}"))?;
+    let img = surface
+        .into_rgba_image()
+        .map_err(|e| anyhow!("to rgba: {e}"))?;
+    img.save(dest).context("save PNG")?;
+    Ok(())
 }
 
 /// Downloads the base champion loading portrait from Data Dragon, decodes
 /// the JPEG, and writes it as a PNG at `dest`. Uses the `/loading/` endpoint
 /// (308×560 portrait) rather than `/splash/` (1215×717 landscape) so the
-/// aspect ratio matches the DDS-extracted splashes from mods. Sanitizes
-/// the champion name by stripping everything non-alphanumeric so "Miss
-/// Fortune" becomes "MissFortune" etc. — matches Data Dragon's internal
-/// naming for most champions.
+/// aspect ratio matches the textures extracted from mods. Sanitizes the
+/// champion name by stripping non-alphanumeric characters so "Miss Fortune"
+/// becomes "MissFortune" etc. — matches Data Dragon's internal naming.
 fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
     let sanitized: String = champion
         .chars()
@@ -188,25 +290,4 @@ fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
     let img = image::load_from_memory(&bytes).context("decoding JPEG")?;
     img.save(dest).context("writing PNG")?;
     Ok(())
-}
-
-fn write_dds_as_png(dds_bytes: &[u8], dest: &Path) -> Result<()> {
-    let dds = image_dds::ddsfile::Dds::read(dds_bytes)
-        .map_err(|e| anyhow!("parse DDS header: {e}"))?;
-    let img = image_dds::image_from_dds(&dds, 0)
-        .map_err(|e| anyhow!("decode DDS: {e}"))?;
-    img.save(dest).context("save PNG")?;
-    Ok(())
-}
-
-/// Parses a DDS header and returns `(width, height)`. Returns `None` if the
-/// buffer isn't a DDS file or is too small.
-fn dds_dimensions(dds: &[u8]) -> Option<(u32, u32)> {
-    if dds.len() < 20 || dds[..4] != DDS_MAGIC {
-        return None;
-    }
-    // DDS_HEADER layout: magic(4) size(4) flags(4) height(4) width(4) ...
-    let height = u32::from_le_bytes(dds[12..16].try_into().ok()?);
-    let width = u32::from_le_bytes(dds[16..20].try_into().ok()?);
-    Some((width, height))
 }

@@ -31,5 +31,5 @@ tauri-plugin-dialog = "2.7.0"
 zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
-image_dds = "0.7.2"
+ltk_texture = "0.5.0"
 
