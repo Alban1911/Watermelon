@@ -6,6 +6,7 @@ import {
   Loader2,
   Plus,
   RotateCw,
+  Trash2,
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
@@ -38,6 +39,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<Skin | null>(null);
   const [groupByChampion, setGroupByChampion] = useState(
     () => localStorage.getItem(GROUP_STORAGE_KEY) === "1",
   );
@@ -163,6 +165,32 @@ function App() {
       setError(String(e));
     }
   };
+
+  const handleDeleteSkin = (skin: Skin) => {
+    setDeleteTarget(skin);
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    const id = deleteTarget.id;
+    setDeleteTarget(null);
+    try {
+      await invoke("delete_skin", { id });
+      await load();
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  // Close the delete dialog on Escape.
+  useEffect(() => {
+    if (!deleteTarget) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDeleteTarget(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [deleteTarget]);
 
   const importFiles = useCallback(
     async (files: File[]) => {
@@ -358,6 +386,7 @@ function App() {
                       key={skin.id}
                       skin={skin}
                       onToggle={(enabled) => setEnabled(skin.id, enabled)}
+                      onDelete={() => handleDeleteSkin(skin)}
                     />
                   ),
                 )}
@@ -386,6 +415,39 @@ function App() {
           </div>
         </div>
       )}
+
+      {deleteTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/60 backdrop-blur-sm"
+          onClick={() => setDeleteTarget(null)}
+        >
+          <div
+            className="w-full max-w-sm rounded-xl bg-card p-6 shadow-2xl ring-1 ring-border"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold">Delete skin?</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This permanently removes{" "}
+              <span className="font-medium capitalize text-foreground">
+                {deleteTarget.name}
+              </span>{" "}
+              and its cached preview.
+            </p>
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={confirmDelete}>
+                <Trash2 />
+                Delete
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -409,7 +471,7 @@ function ChampionTile({
   return (
     <button
       onClick={onOpen}
-      className="group flex flex-col items-center gap-2 rounded-lg p-3 transition-colors hover:bg-muted"
+      className="group flex cursor-pointer flex-col items-center gap-2 rounded-lg p-3 transition-colors hover:bg-muted"
     >
       <div className="size-24 overflow-hidden rounded-full bg-muted ring-1 ring-border transition-transform group-hover:scale-105">
         {icon ? (
@@ -441,13 +503,15 @@ function ChampionTile({
 function SkinCard({
   skin,
   onToggle,
+  onDelete,
 }: {
   skin: Skin;
   onToggle: (enabled: boolean) => void;
+  onDelete: () => void;
 }) {
   return (
     <Card className="overflow-hidden p-0 gap-0">
-      <div className="aspect-square w-full overflow-hidden bg-muted">
+      <div className="relative aspect-square w-full overflow-hidden bg-muted">
         {skin.preview ? (
           <img
             src={convertFileSrc(skin.preview)}
@@ -455,6 +519,15 @@ function SkinCard({
             className="h-full w-full object-cover object-[center_25%]"
           />
         ) : null}
+        <button
+          type="button"
+          onClick={onDelete}
+          aria-label="Delete skin"
+          title="Delete skin"
+          className="absolute right-2 top-2 cursor-pointer rounded-full bg-background/80 p-1.5 text-foreground opacity-0 backdrop-blur-sm transition-all hover:bg-destructive hover:text-destructive-foreground focus-visible:opacity-100 group-hover/card:opacity-100"
+        >
+          <Trash2 className="size-4" />
+        </button>
       </div>
       <div className="flex items-center gap-2 p-3">
         <div className="min-w-0 flex-1">

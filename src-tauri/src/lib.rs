@@ -63,6 +63,37 @@ fn open_skins_folder(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Removes a skin from the library: deletes its `.fantome` file, any
+/// cached preview PNG, and clears its entry from the enabled-state file.
+/// The `id` is the file stem used by the scan (see `library::scan`).
+#[tauri::command]
+fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
+    let paths = resolve_paths(&app)?;
+
+    let fantome_path = paths.skins_dir.join(format!("{id}.fantome"));
+    if fantome_path.exists() {
+        std::fs::remove_file(&fantome_path)
+            .map_err(|e| format!("removing .fantome: {e}"))?;
+    }
+
+    let preview_path = paths.previews_dir.join(format!("{id}.png"));
+    if preview_path.exists() {
+        // Preview is just a cache — if the remove fails, don't fail the
+        // whole delete (the .fantome is already gone, the scan will no
+        // longer reference this id).
+        let _ = std::fs::remove_file(&preview_path);
+    }
+
+    let mut state =
+        SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
+    state.set(id, false);
+    state
+        .save(&paths.state_path)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 /// Picks a destination path in the skins directory for a given `.fantome`
 /// filename, appending a numeric suffix if a file with that name already exists.
 fn pick_dest(skins_dir: &std::path::Path, filename: &str) -> PathBuf {
@@ -136,7 +167,8 @@ pub fn run() {
             set_skin_enabled,
             open_skins_folder,
             import_skin,
-            import_skin_bytes
+            import_skin_bytes,
+            delete_skin
         ])
         .setup(|app| {
             let handle = app.handle().clone();
