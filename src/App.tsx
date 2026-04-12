@@ -478,6 +478,7 @@ function ChampionTile({
           <img
             src={convertFileSrc(icon)}
             alt=""
+            draggable={false}
             className="h-full w-full object-cover"
           />
         ) : null}
@@ -516,6 +517,7 @@ function SkinCard({
           <img
             src={convertFileSrc(skin.preview)}
             alt=""
+            draggable={false}
             className="h-full w-full object-cover object-[center_25%]"
           />
         ) : null}
