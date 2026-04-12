@@ -32,4 +32,5 @@ zip = { version = "8.5.1", default-features = false, features = ["deflate"] }
 zstd = "0.13.3"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 ltk_texture = "0.5.0"
+xxhash-rust = { version = "0.8.15", features = ["xxh64"] }
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
 
-use crate::wad::{CompressionType, WadReader};
+use crate::wad::{bin, CompressionType, WadReader};
 
 const DDS_MAGIC: [u8; 4] = *b"DDS ";
 const TEX_MAGIC: [u8; 4] = *b"TEX\0";
@@ -42,7 +42,7 @@ pub fn cached_or_extract(
 
     std::fs::create_dir_all(previews_dir).context("creating previews dir")?;
 
-    if let Some(texture_bytes) = find_best_splash_texture(fantome_path)? {
+    if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
         write_texture_as_png(&texture_bytes, &dest)?;
         return Ok(Some(dest));
     }
@@ -92,19 +92,128 @@ fn read_meta_image(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
 /// Finds the best splash-art texture (DDS or TEX) inside a `.fantome`,
 /// handling both packed (single `.wad.client` binary) and unpacked
 /// (`WAD/Champion.wad.client/...` directory prefix) layouts.
-fn find_best_splash_texture(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
-    let candidates = collect_texture_candidates(fantome_path)?;
-    Ok(pick_best_splash(&candidates))
-}
-
-fn collect_texture_candidates(fantome_path: &Path) -> Result<Vec<Vec<u8>>> {
+///
+/// Strategy, in descending order of authority:
+///   1. **Parse the mod's PROP bin files** and read the `Loadscreen.Image`
+///      string (or any loadscreen-ish path referenced from any bin). Hash
+///      that exact path with xxhash64 and look it up in the WAD TOC. This
+///      is the only method that tells us *exactly* which skin slot the
+///      mod is targeting — works for base skin, skin11, skin22, whatever.
+///   2. **Hardcoded path patterns** — xxhash64 a handful of common paths
+///      (`assets/characters/{champion}/skins/base/{champion}loadscreen_0.tex`
+///      and variants). Cheap fallback when bin parsing comes up empty.
+///   3. **Aspect-ratio heuristic** — walk every DDS/TEX entry and pick
+///      the one closest to 16:9. Last resort for mods where neither bin
+///      parsing nor path guessing yields a match (e.g. unpacked mods).
+fn find_best_splash_texture(
+    fantome_path: &Path,
+    champion: Option<&str>,
+) -> Result<Option<Vec<u8>>> {
     let file = File::open(fantome_path).context("open .fantome")?;
     let mut zip = ZipArchive::new(file).context("read zip")?;
 
     if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
-        return Ok(collect_textures_from_packed_wad(&wad_bytes));
+        let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
+
+        if let Some(bytes) = find_splash_via_bin(&reader) {
+            return Ok(Some(bytes));
+        }
+
+        if let Some(name) = champion {
+            if let Some(bytes) = find_splash_by_known_paths(&reader, name) {
+                return Ok(Some(bytes));
+            }
+        }
+
+        return Ok(pick_best_splash(&collect_textures_from_reader(&reader)));
     }
-    Ok(collect_textures_from_unpacked_zip(&mut zip))
+
+    Ok(pick_best_splash(&collect_textures_from_unpacked_zip(
+        &mut zip,
+    )))
+}
+
+/// Walks every PROP bin in the WAD, collects string values from each,
+/// and returns the first one that (a) has `loadscreen` in its basename
+/// and (b) ends in `.tex`/`.dds`, **and** hashes to an entry actually
+/// present in the WAD TOC. Multi-skin mod packs have many PROP bins and
+/// many of them reference loadscreen paths the mod doesn't ship, so we
+/// keep scanning until we find one that's actually present.
+///
+/// The basename check is critical: a naive `path.contains("splash")`
+/// filter also matches particle VFX filenames like
+/// `..._q_explosion_bighoneysplash.skins_...tex`, which would hit the
+/// TOC (mods do ship those) but give a completely wrong preview.
+fn find_splash_via_bin(reader: &WadReader) -> Option<Vec<u8>> {
+    for entry in reader.entries() {
+        if !matches!(
+            entry.compression,
+            CompressionType::Zstd | CompressionType::Raw
+        ) {
+            continue;
+        }
+        let Ok(decoded) = reader.extract(entry) else { continue };
+        if decoded.len() < 4 || &decoded[..4] != b"PROP" {
+            continue;
+        }
+
+        for path in bin::collect_strings(&decoded) {
+            let lower = path.to_ascii_lowercase();
+            let basename = lower.rsplit('/').next().unwrap_or("");
+            if !basename.contains("loadscreen") {
+                continue;
+            }
+            if !(lower.ends_with(".tex") || lower.ends_with(".dds")) {
+                continue;
+            }
+            if let Some(bytes) = lookup_texture_by_path(reader, &lower) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
+/// Tries a small set of known LoL asset path patterns for the base-skin
+/// loadscreen, returning the decoded bytes of the first one that's present
+/// in the WAD.
+fn find_splash_by_known_paths(reader: &WadReader, champion: &str) -> Option<Vec<u8>> {
+    let champ = champion
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if champ.is_empty() {
+        return None;
+    }
+    let candidates = [
+        format!("assets/characters/{champ}/skins/base/{champ}loadscreen_0.tex"),
+        format!("assets/characters/{champ}/skins/base/{champ}loadscreen_0.dds"),
+        format!("assets/characters/{champ}/skins/skin0/{champ}loadscreen_0.tex"),
+        format!("assets/characters/{champ}/skins/skin0/{champ}loadscreen_0.dds"),
+        format!("assets/characters/{champ}/skins/skin0/{champ}_skin0_loadscreen.tex"),
+        format!("assets/characters/{champ}/skins/skin0/{champ}_skin0_loadscreen.dds"),
+    ];
+    for path in &candidates {
+        if let Some(bytes) = lookup_texture_by_path(reader, path) {
+            return Some(bytes);
+        }
+    }
+    None
+}
+
+/// Hashes `path` (assumed already lowercase) and fetches the corresponding
+/// WAD entry if present, returning the decoded bytes when it parses as
+/// either a DDS or a TEX texture.
+fn lookup_texture_by_path(reader: &WadReader, path: &str) -> Option<Vec<u8>> {
+    let hash = xxhash_rust::xxh64::xxh64(path.as_bytes(), 0);
+    let entry = reader.find_by_hash(hash)?;
+    let decoded = reader.extract(entry).ok()?;
+    if is_texture_magic(&decoded) {
+        Some(decoded)
+    } else {
+        None
+    }
 }
 
 /// If the archive contains a single packed `WAD/X.wad.client` binary
@@ -133,11 +242,7 @@ fn read_packed_wad(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>>> {
     Ok(Some(buf))
 }
 
-fn collect_textures_from_packed_wad(wad_bytes: &[u8]) -> Vec<Vec<u8>> {
-    let reader = match WadReader::new(wad_bytes) {
-        Ok(r) => r,
-        Err(_) => return Vec::new(),
-    };
+fn collect_textures_from_reader(reader: &WadReader) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     for entry in reader.entries() {
         if !matches!(

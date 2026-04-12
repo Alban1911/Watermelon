@@ -39,6 +39,7 @@ impl From<u8> for CompressionType {
 
 #[derive(Debug, Clone)]
 pub struct WadEntry {
+    pub name_hash: u64,
     pub offset: u32,
     pub size_compressed: u32,
     pub size_decompressed: u32,
@@ -87,8 +88,7 @@ impl<'a> WadReader<'a> {
             let off = HEADER_SIZE + i * TOC_ENTRY_SIZE;
             let e = &data[off..off + TOC_ENTRY_SIZE];
             entries.push(WadEntry {
-                // bytes 0-7: name_hash (xxhash64 of lowercase path), not needed
-                // for the biggest-DDS heuristic
+                name_hash: u64::from_le_bytes(e[0..8].try_into().unwrap()),
                 offset: u32::from_le_bytes(e[8..12].try_into().unwrap()),
                 size_compressed: u32::from_le_bytes(e[12..16].try_into().unwrap()),
                 size_decompressed: u32::from_le_bytes(e[16..20].try_into().unwrap()),
@@ -102,6 +102,17 @@ impl<'a> WadReader<'a> {
 
     pub fn entries(&self) -> &[WadEntry] {
         &self.entries
+    }
+
+    /// Finds an entry by its pre-computed xxhash64 path hash. Entries are
+    /// sorted by hash in the TOC so this is a binary search. Use together
+    /// with `xxhash_rust::xxh64::xxh64(path.to_ascii_lowercase().as_bytes(), 0)`
+    /// to look up a specific asset path.
+    pub fn find_by_hash(&self, hash: u64) -> Option<&WadEntry> {
+        self.entries
+            .binary_search_by_key(&hash, |e| e.name_hash)
+            .ok()
+            .map(|i| &self.entries[i])
     }
 
     pub fn extract(&self, entry: &WadEntry) -> Result<Vec<u8>> {
