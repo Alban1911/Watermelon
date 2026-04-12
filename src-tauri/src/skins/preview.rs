@@ -259,35 +259,64 @@ fn write_texture_as_png(bytes: &[u8], dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Returns the path to a cached square champion icon (380×380 face tile),
+/// fetching it from Data Dragon's `/tiles/` endpoint and re-encoding as PNG
+/// on first access. Returns `None` if the champion name is empty or the
+/// fetch fails. Used for the champion grid view — one tile per champion
+/// showing the official portrait.
+pub fn cached_champion_icon(icons_dir: &Path, champion: &str) -> Option<PathBuf> {
+    let sanitized = sanitize_champion_name(champion)?;
+    let dest = icons_dir.join(format!("{sanitized}.png"));
+    if dest.exists() {
+        return Some(dest);
+    }
+    std::fs::create_dir_all(icons_dir).ok()?;
+    let url = format!(
+        "https://ddragon.leagueoflegends.com/cdn/img/champion/tiles/{sanitized}_0.jpg"
+    );
+    fetch_and_save_as_png(&url, &dest).ok()?;
+    Some(dest)
+}
+
 /// Downloads the base champion loading portrait from Data Dragon, decodes
 /// the JPEG, and writes it as a PNG at `dest`. Uses the `/loading/` endpoint
 /// (308×560 portrait) rather than `/splash/` (1215×717 landscape) so the
-/// aspect ratio matches the textures extracted from mods. Sanitizes the
-/// champion name by stripping non-alphanumeric characters so "Miss Fortune"
-/// becomes "MissFortune" etc. — matches Data Dragon's internal naming.
+/// aspect ratio matches the textures extracted from mods.
 fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
-    let sanitized: String = champion
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .collect();
-    if sanitized.is_empty() {
-        return Err(anyhow!("empty champion name"));
-    }
+    let sanitized = sanitize_champion_name(champion)
+        .ok_or_else(|| anyhow!("empty champion name"))?;
     let url = format!(
         "https://ddragon.leagueoflegends.com/cdn/img/champion/loading/{sanitized}_0.jpg"
     );
+    fetch_and_save_as_png(&url, dest)
+}
 
+/// Strips everything non-alphanumeric from a champion name so "Miss Fortune"
+/// becomes "MissFortune" etc. — matches Data Dragon's internal naming for
+/// most champions. Returns `None` if the result is empty.
+fn sanitize_champion_name(champion: &str) -> Option<String> {
+    let s: String = champion
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
         .timeout(DDRAGON_TIMEOUT)
         .build()
         .context("building HTTP client")?;
-    let resp = client.get(&url).send().context("fetching Data Dragon")?;
+    let resp = client.get(url).send().context("fetching Data Dragon")?;
     if !resp.status().is_success() {
         return Err(anyhow!("Data Dragon returned status {}", resp.status()));
     }
     let bytes = resp.bytes().context("reading Data Dragon response")?;
-
-    let img = image::load_from_memory(&bytes).context("decoding JPEG")?;
+    let img = image::load_from_memory(&bytes).context("decoding image")?;
     img.save(dest).context("writing PNG")?;
     Ok(())
 }

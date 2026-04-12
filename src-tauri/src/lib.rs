@@ -13,6 +13,7 @@ struct AppPaths {
     skins_dir: PathBuf,
     state_path: PathBuf,
     previews_dir: PathBuf,
+    champion_icons_dir: PathBuf,
 }
 
 fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
@@ -21,6 +22,7 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
         skins_dir: data_dir.join("skins"),
         state_path: data_dir.join("state.json"),
         previews_dir: data_dir.join("previews"),
+        champion_icons_dir: data_dir.join("champion_icons"),
     })
 }
 
@@ -28,8 +30,13 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
 fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
     let paths = resolve_paths(&app)?;
     let state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
-    let skins = library::scan(&paths.skins_dir, &paths.previews_dir, &state)
-        .map_err(|e| e.to_string())?;
+    let skins = library::scan(
+        &paths.skins_dir,
+        &paths.previews_dir,
+        &paths.champion_icons_dir,
+        &state,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(SkinLibrary {
         dir: paths.skins_dir.to_string_lossy().into_owned(),
         skins,

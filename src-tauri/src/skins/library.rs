@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -16,6 +17,7 @@ pub struct SkinEntry {
     pub version: Option<String>,
     pub description: Option<String>,
     pub preview: Option<String>,
+    pub champion_icon: Option<String>,
     pub enabled: bool,
 }
 
@@ -37,11 +39,16 @@ pub struct SkinLibrary {
 pub fn scan(
     skins_dir: &Path,
     previews_dir: &Path,
+    icons_dir: &Path,
     state: &SkinState,
 ) -> Result<Vec<SkinEntry>> {
     if !skins_dir.exists() {
         fs::create_dir_all(skins_dir).context("creating skins directory")?;
     }
+
+    // Per-scan cache so we fetch each champion's icon at most once even if
+    // multiple skins share the champion.
+    let mut icon_cache: HashMap<String, Option<String>> = HashMap::new();
 
     let mut entries = Vec::new();
     for dir_entry in fs::read_dir(skins_dir).context("reading skins directory")? {
@@ -80,6 +87,14 @@ pub fn scan(
         .flatten()
         .map(|p| p.to_string_lossy().into_owned());
 
+        let champion_icon = icon_cache
+            .entry(champion.clone())
+            .or_insert_with(|| {
+                preview::cached_champion_icon(icons_dir, &champion)
+                    .map(|p| p.to_string_lossy().into_owned())
+            })
+            .clone();
+
         entries.push(SkinEntry {
             id: stem.clone(),
             name,
@@ -88,10 +103,25 @@ pub fn scan(
             version,
             description,
             preview,
+            champion_icon,
             enabled: state.is_enabled(&stem),
         });
     }
 
-    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by champion (case-insensitive) primary, then by skin name so mods
+    // for the same champion cluster together in alphabetical order — matches
+    // the grouped view's order and the in-game champion roster.
+    entries.sort_by(|a, b| {
+        let champ = a
+            .champion
+            .to_ascii_lowercase()
+            .cmp(&b.champion.to_ascii_lowercase());
+        if champ != std::cmp::Ordering::Equal {
+            return champ;
+        }
+        a.name
+            .to_ascii_lowercase()
+            .cmp(&b.name.to_ascii_lowercase())
+    });
     Ok(entries)
 }
