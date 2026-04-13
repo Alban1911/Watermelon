@@ -1,8 +1,10 @@
+mod data_dragon;
 mod lcu;
 mod pengu;
 mod skins;
 mod wad;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager, RunEvent};
@@ -16,6 +18,11 @@ static FLAG_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// so it can verify the IFEO Debugger value still references our dll before
 /// deleting the registry key.
 static CORE_DLL_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Champion alias → numeric id map, fetched once from Data Dragon at
+/// startup. Used by `regenerate_skin_index` to resolve `.fantome` file
+/// metadata (which uses string aliases) to the numeric championIds the
+/// LCU carousel speaks in.
+static CHAMPION_MAP: OnceLock<HashMap<String, i64>> = OnceLock::new();
 
 /// Idempotent shutdown cleanup. Deactivates pengu (deletes IFEO key if it's
 /// still ours, removes the flag file, kills `LeagueClientUx.exe` so the
@@ -31,6 +38,43 @@ fn cleanup_on_exit() {
         }
     }
     kill_dev_server_port();
+}
+
+/// Rebuilds `<app_data_dir>/skins_index.json` from the current library
+/// scan + state + champion map. Called on every skin-mutating command so
+/// `core.dll`'s talon scheme handler always serves up-to-date data.
+/// Best-effort: logs errors but never fails the caller. If the champion
+/// map isn't loaded yet (Data Dragon fetch still in flight), this is a
+/// no-op and the file will be written later when the fetch completes.
+fn regenerate_skin_index(app: &AppHandle) {
+    let Ok(paths) = resolve_paths(app) else { return };
+    let Ok(data_dir) = app.path().app_data_dir() else { return };
+    let Some(champion_map) = CHAMPION_MAP.get() else {
+        eprintln!("[SkinIndex] champion map not loaded yet, skipping regenerate");
+        return;
+    };
+    let state = match SkinState::load(&paths.state_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[SkinIndex] load state failed: {}", e);
+            return;
+        }
+    };
+    let skins = match library::scan(
+        &paths.skins_dir,
+        &paths.previews_dir,
+        &paths.champion_icons_dir,
+        &state,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[SkinIndex] library scan failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = skins::index::regenerate(&data_dir, &skins, &state, champion_map) {
+        eprintln!("[SkinIndex] regenerate failed: {}", e);
+    }
 }
 
 fn kill_dev_server_port() {
@@ -94,6 +138,7 @@ fn set_skin_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), Str
     let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     state.set(id, enabled);
     state.save(&paths.state_path).map_err(|e| e.to_string())?;
+    regenerate_skin_index(&app);
     Ok(())
 }
 
@@ -136,6 +181,7 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
         .save(&paths.state_path)
         .map_err(|e| e.to_string())?;
 
+    regenerate_skin_index(&app);
     Ok(())
 }
 
@@ -181,6 +227,7 @@ fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
     let dest = pick_dest(&paths.skins_dir, file_name);
 
     std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
+    regenerate_skin_index(&app);
     Ok(())
 }
 
@@ -199,6 +246,7 @@ fn import_skin_bytes(
 
     let dest = pick_dest(&paths.skins_dir, &filename);
     std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+    regenerate_skin_index(&app);
     Ok(())
 }
 
@@ -269,6 +317,28 @@ pub fn run() {
                     eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
                 }
             }
+            // One-shot Data Dragon fetch for the champion alias→id map,
+            // then generate the initial skin index. Runs async so startup
+            // isn't blocked on network I/O.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    match data_dragon::fetch_champion_map().await {
+                        Ok(map) => {
+                            eprintln!(
+                                "[DataDragon] loaded {} champion entries",
+                                map.len()
+                            );
+                            let _ = CHAMPION_MAP.set(map);
+                            regenerate_skin_index(&handle);
+                        }
+                        Err(e) => {
+                            eprintln!("[DataDragon] fetch failed: {}", e);
+                        }
+                    }
+                });
+            }
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 lcu::run(handle).await;

@@ -19,6 +19,7 @@ const SOURCES: &[&str] = &[
     "config.cc",
     "browser/browser.cc",
     "browser/assets.cc",
+    "browser/talon.cc",
     "renderer/renderer.cc",
     "renderer/v8_helper.cc",
     "utils/dylib.cc",
@@ -95,6 +96,7 @@ fn build_core_dll() {
     cmd.arg("/MACHINE:X64");
     cmd.arg(&libcef);
     cmd.arg("user32.lib");
+    cmd.arg("shell32.lib");
 
     println!("cargo:warning=building core.dll → {}", out_dll.display());
 

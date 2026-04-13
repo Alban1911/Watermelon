@@ -7,4 +7,5 @@
 namespace browser
 {
     void register_plugins_domain(cef_request_context_t *ctx);
+    void register_talon_domain(cef_request_context_t *ctx);
 }

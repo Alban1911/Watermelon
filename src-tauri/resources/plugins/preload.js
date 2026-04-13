@@ -1,20 +1,19 @@
-// Talon preload — Step 3 of the carousel-injection rework.
+// Talon preload — Step 5b: real skins via the `https://talon` scheme.
 //
-// When the rcp-fe-lol-champ-select plugin announces itself via a
-// `riotPlugin.announce:` DOM event, we wrap the event's
-// `registrationHandler` so we can capture the plugin's exported API
-// once init resolves (same trick PenguLoader uses internally).
+// Flow:
+//   1. Wait for the rcp-fe-lol-champ-select plugin to announce itself
+//      via a riotPlugin.announce:* DOM event, capture its API.
+//   2. Pre-fetch `https://talon/skins/all` (served by core.dll from
+//      Talon's on-disk skins_index.json), cache the result on
+//      `window.__talonSkinIndex`.
+//   3. Install a wrapper around `champSelectBinding.cache._data.set`
+//      that, on every carousel update, reads the cached index and
+//      splices the current champion's Talon skins into the data array
+//      before Ember renders it.
 //
-// Once we have the API, we wrap `api.champSelectBinding.cache._data.set`
-// to splice a hardcoded test skin entry into the carousel data before
-// Ember renders it. The test skin reuses the base skin's splashPath and
-// tilePath so no external image dependency is required — the user
-// should see a second carousel entry named "Talon Test Skin" with the
-// same artwork as the base skin.
-//
-// Scope: Step 3 is visual proof only. Clicking the test skin is not
-// handled yet — that's a later step once we have real skin data flowing
-// from Talon's Rust backend.
+// Images still reuse the base skin's splashPath and tilePath as
+// placeholders. Real previews via `https://talon/assets/<id>.png` are
+// Step 5c.
 
 (function () {
     'use strict';
@@ -30,14 +29,16 @@
     const ANNOUNCE_PREFIX = 'riotPlugin.announce:';
     const TARGET_PLUGIN = 'rcp-fe-lol-champ-select';
     const CAROUSEL_CACHE_KEY = '/lol-champ-select/v1/skin-carousel-skins';
-    // Custom skin IDs above 9_000_000 avoid colliding with official skin
-    // IDs (which fit under championId * 1000 + variant).
-    const CUSTOM_SKIN_ID = 9_000_099;
+    const TALON_INDEX_URL = 'https://talon/skins/all';
+    // Custom skin ids live above this floor so we can detect ones
+    // already injected into a value.data array and skip double-inject.
+    const CUSTOM_ID_FLOOR = 9_000_000;
 
     const pluginApis = {};
     window.__talonPluginApis = pluginApis;
+    window.__talonSkinIndex = {};
 
-    // ── RCP plugin API capture (Step 2) ──────────────────────────────
+    // ── RCP plugin API capture ───────────────────────────────────────
     const originalDispatchEvent = document.dispatchEvent.bind(document);
     document.dispatchEvent = function (event) {
         if (
@@ -72,7 +73,8 @@
     };
 
     function onChampSelectReady(api) {
-        const cache = api && api.champSelectBinding && api.champSelectBinding.cache && api.champSelectBinding.cache._data;
+        const cache =
+            api && api.champSelectBinding && api.champSelectBinding.cache && api.champSelectBinding.cache._data;
         if (!cache || typeof cache.set !== 'function') {
             log(
                 TARGET_PLUGIN,
@@ -81,10 +83,28 @@
             );
             return;
         }
-        installCacheHook(cache);
+
+        // Pre-fetch the Talon skin index before installing the cache
+        // hook so the hook can read it synchronously when Ember writes
+        // the carousel data. Install the hook regardless of fetch
+        // outcome — on failure the index stays empty and we simply
+        // don't inject anything.
+        fetch(TALON_INDEX_URL)
+            .then((r) => r.json())
+            .then((index) => {
+                window.__talonSkinIndex = index || {};
+                const champCount = Object.keys(window.__talonSkinIndex).length;
+                log('talon skin index loaded:', champCount, 'champion(s)');
+            })
+            .catch((e) => {
+                log('talon skin index fetch failed:', e && e.message);
+            })
+            .finally(() => {
+                installCacheHook(cache);
+            });
     }
 
-    // ── Carousel cache hook (Step 3) ─────────────────────────────────
+    // ── Carousel cache hook ──────────────────────────────────────────
     function installCacheHook(cache) {
         const originalSet = cache.set.bind(cache);
         cache.set = function (key, value) {
@@ -94,10 +114,7 @@
             if (!value || !Array.isArray(value.data) || value.data.length === 0) {
                 return originalSet(key, value);
             }
-            // Idempotent: if we already injected into this data array, skip.
-            if (value.data.some((s) => s && s.id === CUSTOM_SKIN_ID)) {
-                return originalSet(key, value);
-            }
+
             const baseSkin = value.data[0];
             const championId = baseSkin && baseSkin.championId;
             if (!championId) {
@@ -105,22 +122,40 @@
                 return originalSet(key, value);
             }
 
-            value.data.splice(1, 0, makeTestSkin(baseSkin, championId));
+            // Idempotent: if any Talon skin is already present (id in
+            // the custom range) we've already handled this data array.
+            if (value.data.some((s) => s && typeof s.id === 'number' && s.id >= CUSTOM_ID_FLOOR)) {
+                return originalSet(key, value);
+            }
+
+            const talonSkins =
+                (window.__talonSkinIndex || {})[String(championId)] || [];
+            if (talonSkins.length === 0) {
+                return originalSet(key, value);
+            }
+
+            talonSkins.forEach((entry, i) => {
+                value.data.splice(1 + i, 0, makeCarouselSkin(entry, baseSkin, championId));
+            });
             log(
-                'injected test skin into carousel for championId',
+                'injected',
+                talonSkins.length,
+                'talon skin(s) for championId',
                 championId,
-                '(total entries:',
+                '(total entries now',
                 value.data.length + ')'
             );
+
             return originalSet(key, value);
         };
         log('cache._data.set hook installed — waiting for champ-select');
     }
 
-    // Builds a synthetic carousel entry that matches the shape of an LCU
-    // skin object closely enough for Ember to render it. Image paths reuse
-    // the base skin's so the entry renders without any external assets.
-    function makeTestSkin(baseSkin, championId) {
+    // Builds a carousel entry from a Talon index entry. Image paths
+    // reuse the base skin's so the tile renders without external
+    // assets. Real preview images via `https://talon/assets/...` come
+    // in the next step.
+    function makeCarouselSkin(entry, baseSkin, championId) {
         return {
             championId: championId,
             childSkins: [],
@@ -128,10 +163,10 @@
             disabled: false,
             emblems: [],
             groupSplash: '',
-            id: CUSTOM_SKIN_ID,
+            id: entry.id,
             isBase: false,
             isChampionUnlocked: true,
-            name: 'Talon Test Skin',
+            name: entry.name,
             ownership: {
                 loyaltyReward: false,
                 owned: true,
