@@ -17,6 +17,26 @@ fn make_custom_id(champion_id: i64, within: usize) -> i64 {
     9_000_000 + champion_id * 100 + within as i64
 }
 
+/// Capitalizes the first letter of each whitespace-separated word,
+/// leaving the rest of each word alone. Preserves intentional all-caps
+/// or mixed-case runs like "K/DA" that full title-case would clobber.
+fn title_case(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut capitalize_next = true;
+    for c in s.chars() {
+        if c.is_whitespace() {
+            result.push(c);
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.extend(c.to_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct IndexEntry {
@@ -68,7 +88,7 @@ pub fn regenerate(
         entries.push(IndexEntry {
             id: make_custom_id(champion_id, idx_within),
             champion_id,
-            name: skin.name.clone(),
+            name: title_case(&skin.name),
             has_splash_asset: skin.preview.is_some(),
             has_background_asset: skin.background_preview.is_some(),
             has_tile_asset: skin.tile_preview.is_some(),
