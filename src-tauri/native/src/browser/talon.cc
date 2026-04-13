@@ -39,6 +39,21 @@ static std::wstring get_skins_index_path()
     return std::wstring(appdata) + L"\\com.talon.app\\skins_index.json";
 }
 
+static std::string get_skins_index_version()
+{
+    std::filesystem::path path(get_skins_index_path());
+    std::error_code ec;
+    auto exists = std::filesystem::exists(path, ec);
+    if (ec || !exists)
+        return "0";
+
+    auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return "0";
+
+    return std::to_string(mtime.time_since_epoch().count());
+}
+
 static std::wstring get_previews_dir()
 {
     WCHAR appdata[MAX_PATH];
@@ -145,6 +160,7 @@ private:
     cef_stream_reader_t *stream_;
     int64 length_;
     std::u16string mime_;
+    std::string body_storage_;
     // Kept alive for the duration of the handler so CefStr::wrap's
     // non-owning pointer into its buffer stays valid until CEF has
     // consumed the file name.
@@ -172,6 +188,19 @@ private:
         return true;
     }
 
+    bool open_string_stream(const std::string &body, const std::u16string &mime)
+    {
+        body_storage_ = body;
+        stream_ = cef_stream_reader_create_for_data(
+            (void *)body_storage_.data(), body_storage_.size());
+        if (stream_ == nullptr)
+            return false;
+
+        length_ = static_cast<int64>(body_storage_.size());
+        mime_ = mime;
+        return true;
+    }
+
     int _open(cef_request_t *request, int *handle_request, cef_callback_t *callback)
     {
         CefScopedStr url = request->get_url(request);
@@ -187,6 +216,15 @@ private:
 
         if (path.rfind(u"/skins/", 0) == 0)
         {
+            if (path == u"/skins/version")
+            {
+                if (open_string_stream(get_skins_index_version(), u"text/plain"))
+                {
+                    *handle_request = 1;
+                    return 1;
+                }
+            }
+
             if (open_file_stream(get_skins_index_path(), u"application/json"))
             {
                 *handle_request = 1;

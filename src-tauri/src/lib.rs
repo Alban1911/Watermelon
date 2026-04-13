@@ -167,6 +167,14 @@ fn spawn_asset_warmup(app: AppHandle) {
     });
 }
 
+fn spawn_champ_select_refresh() {
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = lcu::refresh_champ_select().await {
+            eprintln!("[LCU] champ-select refresh failed: {}", e);
+        }
+    });
+}
+
 fn kill_dev_server_port() {
     use std::os::windows::process::CommandExt;
     // CREATE_NO_WINDOW: child gets no console, is not in our console
@@ -342,6 +350,7 @@ fn set_skin_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), Str
     state.set(id, enabled);
     state.save(&paths.state_path).map_err(|e| e.to_string())?;
     regenerate_skin_index(&app);
+    spawn_champ_select_refresh();
     Ok(())
 }
 
@@ -395,6 +404,7 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     regenerate_skin_index(&app);
+    spawn_champ_select_refresh();
     Ok(())
 }
 
@@ -480,6 +490,7 @@ async fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
         if warmed {
             let _ = task_app.emit("library:assets-updated", ());
         }
+        spawn_champ_select_refresh();
         spawn_asset_warmup(task_app.clone());
         Ok(())
     })
@@ -510,6 +521,7 @@ async fn import_skin_bytes(
         if warmed {
             let _ = task_app.emit("library:assets-updated", ());
         }
+        spawn_champ_select_refresh();
         spawn_asset_warmup(task_app.clone());
         Ok(())
     })

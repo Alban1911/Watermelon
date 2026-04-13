@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 
 use super::discovery::LcuInfo;
 
@@ -30,5 +30,19 @@ impl LcuClient {
             .context("sending request")?;
 
         resp.text().await.context("reading body")
+    }
+
+    pub async fn post_empty(&self, path: &str) -> Result<StatusCode> {
+        let url = format!("https://127.0.0.1:{}{}", self.info.port, path);
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", &self.info.auth_header)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .context("sending request")?;
+
+        Ok(resp.status())
     }
 }

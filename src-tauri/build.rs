@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 fn main() {
     println!("cargo:rerun-if-env-changed=DEBUG");
+    println!("cargo:rerun-if-changed=resources/plugins/preload.js");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         build_core_dll();

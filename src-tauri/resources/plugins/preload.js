@@ -33,9 +33,11 @@
     const TARGET_PLUGIN = 'rcp-fe-lol-champ-select';
     const CAROUSEL_CACHE_KEY = '/lol-champ-select/v1/skin-carousel-skins';
     const TALON_INDEX_URL = 'https://talon/skins/all';
+    const TALON_INDEX_VERSION_URL = 'https://talon/skins/version';
     const TALON_BACKGROUND_ASSET_BASE_URL = 'https://talon/assets/background/';
     const TALON_SPLASH_ASSET_BASE_URL = 'https://talon/assets/splash/';
     const TALON_TILE_ASSET_BASE_URL = 'https://talon/assets/tile/';
+    const INDEX_REFRESH_MS = 400;
     // Custom skin ids live above this floor so we can detect ones
     // already injected into a value.data array and skip double-inject.
     const CUSTOM_ID_FLOOR = 9_000_000;
@@ -43,6 +45,12 @@
     const pluginApis = {};
     window.__talonPluginApis = pluginApis;
     window.__talonSkinIndex = {};
+    let cacheRef = null;
+    let parentCacheRef = null;
+    let lastIndexJson = '{}';
+    let lastIndexVersion = '0';
+    let lastLiveCarouselValue = null;
+    let refreshTimer = null;
 
     // ── RCP plugin API capture ───────────────────────────────────────
     const originalDispatchEvent = document.dispatchEvent.bind(document);
@@ -79,9 +87,9 @@
     };
 
     function onChampSelectReady(api) {
-        const cache =
-            api && api.champSelectBinding && api.champSelectBinding.cache && api.champSelectBinding.cache._data;
-        if (!cache || typeof cache.set !== 'function') {
+        const parentCache = api && api.champSelectBinding && api.champSelectBinding.cache;
+        const cacheData = parentCache && parentCache._data;
+        if (!cacheData || typeof cacheData.set !== 'function') {
             log(
                 TARGET_PLUGIN,
                 'cache._data.set not reachable — api keys:',
@@ -90,28 +98,49 @@
             return;
         }
 
+        parentCacheRef = parentCache;
+
         // Pre-fetch the Talon skin index before installing the cache
         // hook so the hook can read it synchronously when Ember writes
         // the carousel data. Install the hook regardless of fetch
         // outcome — on failure the index stays empty and we simply
         // don't inject anything.
-        fetch(TALON_INDEX_URL)
-            .then((r) => r.json())
-            .then((index) => {
-                window.__talonSkinIndex = index || {};
-                const champCount = Object.keys(window.__talonSkinIndex).length;
-                log('talon skin index loaded:', champCount, 'champion(s)');
+        fetchIndex()
+            .then(() => fetchIndexVersion())
+            .then((version) => {
+                lastIndexVersion = version;
             })
             .catch((e) => {
                 log('talon skin index fetch failed:', e && e.message);
             })
             .finally(() => {
-                installCacheHook(cache);
+                installCacheHook(cacheData);
+                startIndexRefreshLoop();
             });
+    }
+
+    function fetchIndex() {
+        return fetch(TALON_INDEX_URL, { cache: 'no-store' })
+            .then((r) => r.json())
+            .then((index) => {
+                const normalized = index || {};
+                window.__talonSkinIndex = normalized;
+                lastIndexJson = JSON.stringify(normalized);
+                const champCount = Object.keys(normalized).length;
+                log('talon skin index loaded:', champCount, 'champion(s)');
+                return normalized;
+            });
+    }
+
+    function fetchIndexVersion() {
+        return fetch(TALON_INDEX_VERSION_URL, { cache: 'no-store' })
+            .then((r) => r.text())
+            .then((version) => version || '0');
     }
 
     // ── Carousel cache hook ──────────────────────────────────────────
     function installCacheHook(cache) {
+        cacheRef = cache;
         const originalSet = cache.set.bind(cache);
         cache.set = function (key, value) {
             if (key !== CAROUSEL_CACHE_KEY) {
@@ -120,41 +149,98 @@
             if (!value || !Array.isArray(value.data) || value.data.length === 0) {
                 return originalSet(key, value);
             }
-
-            const baseSkin = value.data[0];
-            const championId = baseSkin && baseSkin.championId;
-            if (!championId) {
-                log('carousel set: no championId on base skin, skipping injection');
-                return originalSet(key, value);
+            lastLiveCarouselValue = value;
+            const injectedCount = injectTalonSkins(value);
+            if (injectedCount > 0) {
+                log('injected', injectedCount, 'talon skin(s) into carousel');
             }
-
-            // Idempotent: if any Talon skin is already present (id in
-            // the custom range) we've already handled this data array.
-            if (value.data.some((s) => s && typeof s.id === 'number' && s.id >= CUSTOM_ID_FLOOR)) {
-                return originalSet(key, value);
-            }
-
-            const talonSkins =
-                (window.__talonSkinIndex || {})[String(championId)] || [];
-            if (talonSkins.length === 0) {
-                return originalSet(key, value);
-            }
-
-            talonSkins.forEach((entry, i) => {
-                value.data.splice(1 + i, 0, makeCarouselSkin(entry, baseSkin, championId));
-            });
-            log(
-                'injected',
-                talonSkins.length,
-                'talon skin(s) for championId',
-                championId,
-                '(total entries now',
-                value.data.length + ')'
-            );
-
             return originalSet(key, value);
         };
         log('cache._data.set hook installed — waiting for champ-select');
+    }
+
+    function startIndexRefreshLoop() {
+        if (refreshTimer !== null) {
+            return;
+        }
+        refreshTimer = setInterval(() => {
+            fetchIndexVersion()
+                .then((version) => {
+                    if (version === lastIndexVersion) {
+                        return;
+                    }
+                    lastIndexVersion = version;
+                    return fetchIndex().then(() => {
+                        log('talon skin index changed — refreshing carousel');
+                        refreshCurrentCarousel();
+                    });
+                })
+                .catch((e) => {
+                    log('talon skin index refresh failed:', e && e.message);
+                });
+        }, INDEX_REFRESH_MS);
+    }
+
+    function refreshCurrentCarousel() {
+        if (!cacheRef || !lastLiveCarouselValue) {
+            return;
+        }
+        const live = lastLiveCarouselValue;
+        if (!Array.isArray(live.data) || live.data.length === 0) {
+            return;
+        }
+
+        const cleaned = {
+            ...live,
+            data: live.data.filter(
+                (s) => !(s && typeof s.id === 'number' && s.id >= CUSTOM_ID_FLOOR)
+            ),
+        };
+
+        try {
+            // The _data.set hook re-injects Talon skins into cleaned.data
+            // in place, then stores via originalSet.
+            cacheRef.set(CAROUSEL_CACHE_KEY, cleaned);
+        } catch (e) {
+            log('carousel refresh set failed:', e && e.message);
+            return;
+        }
+
+        // _data.set only stores — observers live on the parent cache and
+        // must be fired separately with the unwrapped payload (the array).
+        if (parentCacheRef && typeof parentCacheRef._triggerResourceObservers === 'function') {
+            try {
+                parentCacheRef._triggerResourceObservers(CAROUSEL_CACHE_KEY, cleaned.data);
+            } catch (e) {
+                log('_triggerResourceObservers failed:', e && e.message);
+            }
+        }
+    }
+
+    function injectTalonSkins(value) {
+        const baseSkin = value.data[0];
+        const championId = baseSkin && baseSkin.championId;
+        if (!championId) {
+            log('carousel set: no championId on base skin, skipping injection');
+            return 0;
+        }
+
+        // Idempotent: if any Talon skin is already present (id in
+        // the custom range) we've already handled this data array.
+        if (value.data.some((s) => s && typeof s.id === 'number' && s.id >= CUSTOM_ID_FLOOR)) {
+            return 0;
+        }
+
+        const talonSkins =
+            (window.__talonSkinIndex || {})[String(championId)] || [];
+        if (talonSkins.length === 0) {
+            return 0;
+        }
+
+        talonSkins.forEach((entry, i) => {
+            value.data.splice(1 + i, 0, makeCarouselSkin(entry, baseSkin, championId));
+        });
+        return talonSkins.length;
     }
 
     function makeAssetUrl(baseUrl, fileStem) {
