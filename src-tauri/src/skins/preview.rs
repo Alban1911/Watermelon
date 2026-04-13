@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Context, Result};
-use image::{imageops, RgbaImage};
+use image::codecs::png::{CompressionType as PngCompression, FilterType as PngFilter, PngEncoder};
+use image::{imageops, ExtendedColorType, ImageEncoder, RgbaImage};
 use ltk_texture::{Dds, Tex, Texture};
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{BufWriter, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 use zip::ZipArchive;
@@ -14,6 +15,16 @@ const TEX_MAGIC: [u8; 4] = *b"TEX\0";
 const DDRAGON_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKGROUND_WIDTH: u32 = 1920;
 const BACKGROUND_HEIGHT: u32 = 1080;
+// Blur on a downsampled canvas — sigma scales 1:1 with the downsample
+// factor (18 * 270/1080 = 4.5), which is mathematically close to running
+// sigma=18 on the full canvas but ~16× less work.
+const BLUR_DOWNSAMPLE_W: u32 = 480;
+const BLUR_DOWNSAMPLE_H: u32 = 270;
+const BLUR_SIGMA_SMALL: f32 = 4.5;
+// Max edge length for carousel tiles — anything bigger gets Lanczos-scaled
+// down before encoding. Splash textures are typically 2048² which would
+// bloat the tile cache for zero visible gain.
+const TILE_MAX_DIM: u32 = 384;
 
 pub fn cached_preview_path(
     fantome_path: &Path,
@@ -402,25 +413,44 @@ fn parse_texture(bytes: &[u8]) -> Option<Texture> {
     }
 }
 
-fn compose_background_png(source_bytes: &[u8], dest: &Path) -> Result<()> {
-    let src = decode_image_to_rgba(source_bytes)?;
+fn compose_background_png(src: &RgbaImage, dest: &Path) -> Result<()> {
     let (src_w, src_h) = src.dimensions();
     if src_w == 0 || src_h == 0 {
         return Err(anyhow!("background source has zero dimension"));
     }
 
+    // Cover-fill: scale the source so it at least covers the canvas, then
+    // center-crop to exact canvas size. Triangle is fine here — the result
+    // gets heavily blurred next, so any high-frequency loss is invisible.
     let cover_scale = f32::max(
         BACKGROUND_WIDTH as f32 / src_w as f32,
         BACKGROUND_HEIGHT as f32 / src_h as f32,
     );
     let cover_w = ((src_w as f32) * cover_scale).ceil() as u32;
     let cover_h = ((src_h as f32) * cover_scale).ceil() as u32;
-    let cover = imageops::resize(&src, cover_w, cover_h, imageops::FilterType::Lanczos3);
+    let cover = imageops::resize(src, cover_w, cover_h, imageops::FilterType::Triangle);
     let crop_x = (cover_w.saturating_sub(BACKGROUND_WIDTH)) / 2;
     let crop_y = (cover_h.saturating_sub(BACKGROUND_HEIGHT)) / 2;
-    let mut canvas = imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
-        .to_image();
-    canvas = imageops::blur(&canvas, 18.0);
+    let cover_cropped =
+        imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
+            .to_image();
+
+    // Blur at 480×270 then upscale back — the upscale itself adds linear
+    // smoothing, which is what we want anyway, and the blur runs on ~16×
+    // fewer pixels than it would at full canvas size.
+    let small = imageops::resize(
+        &cover_cropped,
+        BLUR_DOWNSAMPLE_W,
+        BLUR_DOWNSAMPLE_H,
+        imageops::FilterType::Triangle,
+    );
+    let blurred_small = imageops::blur(&small, BLUR_SIGMA_SMALL);
+    let mut canvas = imageops::resize(
+        &blurred_small,
+        BACKGROUND_WIDTH,
+        BACKGROUND_HEIGHT,
+        imageops::FilterType::Triangle,
+    );
 
     // Dim the blurred fill a bit so the centered art remains the focal point.
     for pixel in canvas.pixels_mut() {
@@ -435,17 +465,50 @@ fn compose_background_png(source_bytes: &[u8], dest: &Path) -> Result<()> {
     );
     let fg_w = ((src_w as f32) * contain_scale).round().max(1.0) as u32;
     let fg_h = ((src_h as f32) * contain_scale).round().max(1.0) as u32;
-    let foreground = imageops::resize(&src, fg_w, fg_h, imageops::FilterType::Lanczos3);
+    let foreground = imageops::resize(src, fg_w, fg_h, imageops::FilterType::Lanczos3);
 
     // Lift the art a bit so faces land closer to the carousel focus ring.
     let offset_x = ((BACKGROUND_WIDTH - fg_w) / 2) as i64;
     let offset_y = (((BACKGROUND_HEIGHT - fg_h) as f32) * 0.42).round() as i64;
     imageops::overlay(&mut canvas, &foreground, offset_x, offset_y);
 
-    // Subtle vignette so the blurred fill doesn't compete with the foreground.
     apply_vignette(&mut canvas);
-    canvas.save(dest).context("writing background PNG")?;
+    save_rgba_as_png(&canvas, dest)
+}
+
+/// Writes an `RgbaImage` as PNG using the fast-compression encoder path.
+/// The `image` crate's default `.save()` runs zlib at its slowest level,
+/// which doubles encode time for no benefit in a cache folder.
+fn save_rgba_as_png(rgba: &RgbaImage, dest: &Path) -> Result<()> {
+    let file = File::create(dest).context("creating PNG file")?;
+    let writer = BufWriter::new(file);
+    let encoder = PngEncoder::new_with_quality(writer, PngCompression::Fast, PngFilter::NoFilter);
+    encoder
+        .write_image(
+            rgba.as_raw(),
+            rgba.width(),
+            rgba.height(),
+            ExtendedColorType::Rgba8,
+        )
+        .context("encoding PNG")?;
     Ok(())
+}
+
+/// Writes a tile PNG, downscaling first if either edge is larger than
+/// `TILE_MAX_DIM`. Preserves aspect ratio.
+fn save_rgba_as_tile_png(src: &RgbaImage, dest: &Path) -> Result<()> {
+    let (w, h) = src.dimensions();
+    if w <= TILE_MAX_DIM && h <= TILE_MAX_DIM {
+        return save_rgba_as_png(src, dest);
+    }
+    let scale = f32::min(
+        TILE_MAX_DIM as f32 / w as f32,
+        TILE_MAX_DIM as f32 / h as f32,
+    );
+    let tw = ((w as f32) * scale).round().max(1.0) as u32;
+    let th = ((h as f32) * scale).round().max(1.0) as u32;
+    let resized = imageops::resize(src, tw, th, imageops::FilterType::Lanczos3);
+    save_rgba_as_png(&resized, dest)
 }
 
 fn decode_image_to_rgba(bytes: &[u8]) -> Result<RgbaImage> {
@@ -476,19 +539,6 @@ fn apply_vignette(canvas: &mut RgbaImage) {
         pixel[1] = ((pixel[1] as f32) * shade) as u8;
         pixel[2] = ((pixel[2] as f32) * shade) as u8;
     }
-}
-
-/// Decodes a DDS or TEX byte slice and writes the result as a PNG at `dest`.
-fn write_texture_as_png(bytes: &[u8], dest: &Path) -> Result<()> {
-    let texture = parse_texture(bytes).ok_or_else(|| anyhow!("not a DDS or TEX file"))?;
-    let surface = texture
-        .decode_mipmap(0)
-        .map_err(|e| anyhow!("decode mipmap: {e}"))?;
-    let img = surface
-        .into_rgba_image()
-        .map_err(|e| anyhow!("to rgba: {e}"))?;
-    img.save(dest).context("save PNG")?;
-    Ok(())
 }
 
 /// Returns the path to a cached square champion icon (380×380 face tile),
@@ -564,11 +614,33 @@ pub fn warm_all_cached_assets(
         (splash, tile)
     };
 
+    // Decode each texture at most once. The splash RGBA feeds preview,
+    // background, and (if no dedicated HUD icon exists) tile fallback, so
+    // without caching we'd run the BC decode path three times on the same
+    // bytes. The dedicated tile texture is decoded only if it's present
+    // AND we actually need to write a tile.
+    let need_splash_rgba =
+        needs_preview || needs_background || (needs_tile && tile_bytes.is_none());
+    let splash_rgba: Option<RgbaImage> = if need_splash_rgba {
+        splash_bytes
+            .as_deref()
+            .and_then(|b| decode_image_to_rgba(b).ok())
+    } else {
+        None
+    };
+    let tile_rgba: Option<RgbaImage> = if needs_tile {
+        tile_bytes
+            .as_deref()
+            .and_then(|b| decode_image_to_rgba(b).ok())
+    } else {
+        None
+    };
+
     let mut changed = false;
 
     if needs_preview {
-        if let Some(bytes) = splash_bytes.as_deref() {
-            write_texture_as_png(bytes, &preview_dest)?;
+        if let Some(rgba) = splash_rgba.as_ref() {
+            save_rgba_as_png(rgba, &preview_dest)?;
             changed = true;
         } else if let Some(bytes) = meta_image.as_deref() {
             std::fs::write(&preview_dest, bytes).context("writing preview PNG")?;
@@ -581,28 +653,32 @@ pub fn warm_all_cached_assets(
     }
 
     if needs_background {
-        if let Some(bytes) = splash_bytes.as_deref() {
-            compose_background_png(bytes, &background_dest)?;
+        if let Some(rgba) = splash_rgba.as_ref() {
+            compose_background_png(rgba, &background_dest)?;
             changed = true;
         } else if let Some(bytes) = meta_image.as_deref() {
-            compose_background_png(bytes, &background_dest)?;
-            changed = true;
+            if let Ok(rgba) = decode_image_to_rgba(bytes) {
+                compose_background_png(&rgba, &background_dest)?;
+                changed = true;
+            }
         } else if let Some(name) = champion {
             if let Some(sanitized) = sanitize_champion_name(name) {
                 if let Ok(bytes) = fetch_image_bytes(&ddragon_loading_url(&sanitized)) {
-                    compose_background_png(&bytes, &background_dest)?;
-                    changed = true;
+                    if let Ok(rgba) = decode_image_to_rgba(&bytes) {
+                        compose_background_png(&rgba, &background_dest)?;
+                        changed = true;
+                    }
                 }
             }
         }
     }
 
     if needs_tile {
-        if let Some(bytes) = tile_bytes.as_deref() {
-            write_texture_as_png(bytes, &tile_dest)?;
+        if let Some(rgba) = tile_rgba.as_ref() {
+            save_rgba_as_tile_png(rgba, &tile_dest)?;
             changed = true;
-        } else if let Some(bytes) = splash_bytes.as_deref() {
-            write_texture_as_png(bytes, &tile_dest)?;
+        } else if let Some(rgba) = splash_rgba.as_ref() {
+            save_rgba_as_tile_png(rgba, &tile_dest)?;
             changed = true;
         } else if let Some(bytes) = meta_image.as_deref() {
             std::fs::write(&tile_dest, bytes).context("writing tile PNG")?;
@@ -665,12 +741,9 @@ fn ddragon_tile_url(sanitized: &str) -> String {
 }
 
 fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
-    let url = url.to_string();
-    let dest = dest.to_path_buf();
-    let bytes = fetch_image_bytes(&url)?;
+    let bytes = fetch_image_bytes(url)?;
     let img = image::load_from_memory(&bytes).context("decoding image")?;
-    img.save(&dest).context("writing PNG")?;
-    Ok(())
+    save_rgba_as_png(&img.into_rgba8(), dest)
 }
 
 fn fetch_image_bytes(url: &str) -> Result<Vec<u8>> {
