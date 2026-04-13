@@ -11,6 +11,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 
 import { Button } from "@/components/ui/button";
@@ -178,6 +179,18 @@ function App() {
     const onFocus = () => load();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, [load]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen("library:assets-updated", () => {
+      void load();
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => {
+      unlisten?.();
+    };
   }, [load]);
 
   const setEnabled = async (id: string, enabled: boolean) => {
@@ -459,7 +472,10 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/40 backdrop-blur-md">
           <div className="flex flex-col items-center gap-3 rounded-xl bg-card px-10 py-7 ring-2 ring-border shadow-lg">
             <Loader2 className="size-8 animate-spin text-primary" />
-            <p className="text-sm font-medium">Importing skin…</p>
+            <p className="text-sm font-medium">Importing skin and generating art…</p>
+            <p className="text-xs text-muted-foreground">
+              Talon will finish when the splash, tile, and background are ready.
+            </p>
           </div>
         </div>
       )}

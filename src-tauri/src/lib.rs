@@ -6,8 +6,9 @@ mod wad;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
 
 /// Path of the activation marker file. Stored here so the Ctrl+C handler
@@ -23,6 +24,7 @@ static CORE_DLL_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// metadata (which uses string aliases) to the numeric championIds the
 /// LCU carousel speaks in.
 static CHAMPION_MAP: OnceLock<HashMap<String, i64>> = OnceLock::new();
+static ASSET_WARMING: AtomicBool = AtomicBool::new(false);
 
 /// Idempotent shutdown cleanup. Deactivates pengu (deletes IFEO key if it's
 /// still ours, removes the flag file, kills `LeagueClientUx.exe` so the
@@ -77,6 +79,92 @@ fn regenerate_skin_index(app: &AppHandle) {
     if let Err(e) = skins::index::regenerate(&data_dir, &skins, &state, champion_map) {
         eprintln!("[SkinIndex] regenerate failed: {}", e);
     }
+}
+
+fn warm_assets_for_library(app: &AppHandle) -> Result<bool, String> {
+    let paths = resolve_paths(app)?;
+    std::fs::create_dir_all(&paths.previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.background_previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.tile_previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.champion_icons_dir).map_err(|e| e.to_string())?;
+
+    let mut changed = false;
+    let entries = std::fs::read_dir(&paths.skins_dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("fantome") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            continue;
+        };
+        let meta = skins::fantome::read(&path).ok();
+        let champion = meta.as_ref().and_then(|m| m.champion.as_deref());
+
+        if skins::preview::warm_all_cached_assets(
+            &path,
+            &paths.previews_dir,
+            &paths.background_previews_dir,
+            &paths.tile_previews_dir,
+            &paths.champion_icons_dir,
+            &stem,
+            champion,
+        )
+        .map_err(|e| e.to_string())?
+        {
+            changed = true;
+        }
+    }
+
+    Ok(changed)
+}
+
+fn warm_assets_for_skin(app: &AppHandle, path: &std::path::Path) -> Result<bool, String> {
+    let paths = resolve_paths(app)?;
+    std::fs::create_dir_all(&paths.previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.background_previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.tile_previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.champion_icons_dir).map_err(|e| e.to_string())?;
+
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| format!("invalid skin path: {}", path.display()))?;
+    let meta = skins::fantome::read(path).ok();
+    let champion = meta.as_ref().and_then(|m| m.champion.as_deref());
+
+    skins::preview::warm_all_cached_assets(
+        path,
+        &paths.previews_dir,
+        &paths.background_previews_dir,
+        &paths.tile_previews_dir,
+        &paths.champion_icons_dir,
+        stem,
+        champion,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn spawn_asset_warmup(app: AppHandle) {
+    if ASSET_WARMING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = match warm_assets_for_library(&app) {
+            Ok(changed) => changed,
+            Err(e) => {
+                eprintln!("[Assets] warmup failed: {}", e);
+                false
+            }
+        };
+        if changed {
+            regenerate_skin_index(&app);
+            let _ = app.emit("library:assets-updated", ());
+        }
+        ASSET_WARMING.store(false, Ordering::Release);
+    });
 }
 
 fn kill_dev_server_port() {
@@ -240,6 +328,7 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
         &state,
     )
     .map_err(|e| e.to_string())?;
+    spawn_asset_warmup(app.clone());
     Ok(SkinLibrary {
         dir: paths.skins_dir.to_string_lossy().into_owned(),
         skins,
@@ -384,7 +473,12 @@ fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
     let dest = pick_dest(&paths.skins_dir, &normalized_name);
 
     std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
+    let warmed = warm_assets_for_skin(&app, &dest)?;
     regenerate_skin_index(&app);
+    if warmed {
+        let _ = app.emit("library:assets-updated", ());
+    }
+    spawn_asset_warmup(app.clone());
     Ok(())
 }
 
@@ -404,7 +498,12 @@ fn import_skin_bytes(
     let normalized_name = normalize_import_filename(&filename);
     let dest = pick_dest(&paths.skins_dir, &normalized_name);
     std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+    let warmed = warm_assets_for_skin(&app, &dest)?;
     regenerate_skin_index(&app);
+    if warmed {
+        let _ = app.emit("library:assets-updated", ());
+    }
+    spawn_asset_warmup(app.clone());
     Ok(())
 }
 
@@ -508,6 +607,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 lcu::run(handle).await;
             });
+            spawn_asset_warmup(app.handle().clone());
             Ok(())
         })
         .build(tauri::generate_context!())

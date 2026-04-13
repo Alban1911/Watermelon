@@ -31,6 +31,7 @@ const BACKGROUND_HEIGHT: u32 = 1080;
 ///      icon rather than the actual splash.
 ///   3. **Data Dragon fallback** — fetch the base champion loading
 ///      portrait from ddragon.leagueoflegends.com using the champion name.
+#[allow(dead_code)]
 pub fn cached_or_extract(
     fantome_path: &Path,
     previews_dir: &Path,
@@ -64,6 +65,19 @@ pub fn cached_or_extract(
     Ok(None)
 }
 
+pub fn cached_preview_path(
+    fantome_path: &Path,
+    previews_dir: &Path,
+    skin_id: &str,
+) -> Option<PathBuf> {
+    let dest = previews_dir.join(format!("{skin_id}.png"));
+    if cache_is_fresh(fantome_path, &dest) {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
 /// Produces (or refreshes) a PNG tile/icon for a `.fantome` file and returns
 /// its path.
 ///
@@ -73,6 +87,7 @@ pub fn cached_or_extract(
 ///      decode the matching TEX/DDS entry.
 ///   2. **`META/image.png`** â€” many mods bundle an already UI-friendly image.
 ///   3. **Data Dragon fallback** â€” fetch the base champion square tile.
+#[allow(dead_code)]
 pub fn cached_or_extract_tile(
     fantome_path: &Path,
     tile_previews_dir: &Path,
@@ -111,6 +126,19 @@ pub fn cached_or_extract_tile(
     Ok(None)
 }
 
+pub fn cached_tile_preview_path(
+    fantome_path: &Path,
+    tile_previews_dir: &Path,
+    skin_id: &str,
+) -> Option<PathBuf> {
+    let dest = tile_previews_dir.join(format!("{skin_id}.png"));
+    if cache_is_fresh(fantome_path, &dest) {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
 /// Produces (or refreshes) a carousel-background-safe PNG for a `.fantome`
 /// file and returns its path.
 ///
@@ -118,6 +146,7 @@ pub fn cached_or_extract_tile(
 /// centering a contained foreground on top of a blurred cover background.
 /// This avoids the client stretching a portrait-ish splash across the full
 /// carousel backdrop.
+#[allow(dead_code)]
 pub fn cached_or_extract_background(
     fantome_path: &Path,
     background_previews_dir: &Path,
@@ -154,6 +183,19 @@ pub fn cached_or_extract_background(
     Ok(Some(dest))
 }
 
+pub fn cached_background_preview_path(
+    fantome_path: &Path,
+    background_previews_dir: &Path,
+    skin_id: &str,
+) -> Option<PathBuf> {
+    let dest = background_previews_dir.join(format!("{skin_id}.png"));
+    if cache_is_fresh(fantome_path, &dest) {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
 fn cache_is_fresh(fantome_path: &Path, cached: &Path) -> bool {
     let fantome_mtime = fantome_path
         .metadata()
@@ -170,9 +212,14 @@ fn cache_is_fresh(fantome_path: &Path, cached: &Path) -> bool {
 /// returns its raw bytes. Some cslol-manager mods bundle a pre-rendered
 /// preview image as part of the mod metadata — when present it's the best
 /// possible preview since the mod creator chose it specifically.
+#[allow(dead_code)]
 fn read_meta_image(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
     let file = File::open(fantome_path).context("open .fantome")?;
     let mut zip = ZipArchive::new(file).context("read zip")?;
+    read_meta_image_from_zip(&mut zip)
+}
+
+fn read_meta_image_from_zip(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>>> {
     let mut entry = match zip.by_name("META/image.png") {
         Ok(e) => e,
         Err(_) => return Ok(None),
@@ -198,6 +245,7 @@ fn read_meta_image(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
 ///   3. **Aspect-ratio heuristic** — walk every DDS/TEX entry and pick
 ///      the one closest to 16:9. Last resort for mods where neither bin
 ///      parsing nor path guessing yields a match (e.g. unpacked mods).
+#[allow(dead_code)]
 fn find_best_splash_texture(
     fantome_path: &Path,
     champion: Option<&str>,
@@ -228,6 +276,7 @@ fn find_best_splash_texture(
 
 /// Finds the most UI-appropriate tile/icon texture inside a `.fantome`.
 /// Prefers explicit HUD icon references from PROP bins over heuristics.
+#[allow(dead_code)]
 fn find_best_tile_texture(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
     let file = File::open(fantome_path).context("open .fantome")?;
     let mut zip = ZipArchive::new(file).context("read zip")?;
@@ -678,6 +727,127 @@ pub fn cached_champion_icon(icons_dir: &Path, champion: &str) -> Option<PathBuf>
     Some(dest)
 }
 
+pub fn cached_champion_icon_path(icons_dir: &Path, champion: &str) -> Option<PathBuf> {
+    let sanitized = sanitize_champion_name(champion)?;
+    let dest = icons_dir.join(format!("{sanitized}.png"));
+    if dest.exists() {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
+pub fn warm_all_cached_assets(
+    fantome_path: &Path,
+    previews_dir: &Path,
+    background_previews_dir: &Path,
+    tile_previews_dir: &Path,
+    icons_dir: &Path,
+    skin_id: &str,
+    champion: Option<&str>,
+) -> Result<bool> {
+    let preview_dest = previews_dir.join(format!("{skin_id}.png"));
+    let background_dest = background_previews_dir.join(format!("{skin_id}.png"));
+    let tile_dest = tile_previews_dir.join(format!("{skin_id}.png"));
+
+    let needs_preview = !cache_is_fresh(fantome_path, &preview_dest);
+    let needs_background = !cache_is_fresh(fantome_path, &background_dest);
+    let needs_tile = !cache_is_fresh(fantome_path, &tile_dest);
+    let needs_icon = champion
+        .map(|name| cached_champion_icon_path(icons_dir, name).is_none())
+        .unwrap_or(false);
+
+    if !needs_preview && !needs_background && !needs_tile && !needs_icon {
+        return Ok(false);
+    }
+
+    std::fs::create_dir_all(previews_dir).context("creating previews dir")?;
+    std::fs::create_dir_all(background_previews_dir)
+        .context("creating background previews dir")?;
+    std::fs::create_dir_all(tile_previews_dir).context("creating tile previews dir")?;
+    std::fs::create_dir_all(icons_dir).context("creating champion icons dir")?;
+
+    let file = File::open(fantome_path).context("open .fantome")?;
+    let mut zip = ZipArchive::new(file).context("read zip")?;
+    let meta_image = read_meta_image_from_zip(&mut zip)?;
+
+    let (splash_bytes, tile_bytes) = if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
+        let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
+        let splash = find_splash_via_bin(&reader)
+            .or_else(|| champion.and_then(|name| find_splash_by_known_paths(&reader, name)))
+            .or_else(|| pick_best_splash(&collect_textures_from_reader(&reader)));
+        let tile = find_tile_via_bin(&reader);
+        (splash, tile)
+    } else {
+        let tile = find_tile_in_unpacked_zip(&mut zip);
+        let splash = pick_best_splash(&collect_textures_from_unpacked_zip(&mut zip));
+        (splash, tile)
+    };
+
+    let mut changed = false;
+
+    if needs_preview {
+        if let Some(bytes) = splash_bytes.as_deref() {
+            write_texture_as_png(bytes, &preview_dest)?;
+            changed = true;
+        } else if let Some(bytes) = meta_image.as_deref() {
+            std::fs::write(&preview_dest, bytes).context("writing preview PNG")?;
+            changed = true;
+        } else if let Some(name) = champion {
+            if fetch_ddragon_splash(name, &preview_dest).is_ok() {
+                changed = true;
+            }
+        }
+    }
+
+    if needs_background {
+        if let Some(bytes) = splash_bytes.as_deref() {
+            compose_background_png(bytes, &background_dest)?;
+            changed = true;
+        } else if let Some(bytes) = meta_image.as_deref() {
+            compose_background_png(bytes, &background_dest)?;
+            changed = true;
+        } else if let Some(name) = champion {
+            if let Some(sanitized) = sanitize_champion_name(name) {
+                let url = format!(
+                    "https://ddragon.leagueoflegends.com/cdn/img/champion/loading/{sanitized}_0.jpg"
+                );
+                if let Ok(bytes) = fetch_image_bytes(&url) {
+                    compose_background_png(&bytes, &background_dest)?;
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if needs_tile {
+        if let Some(bytes) = tile_bytes.as_deref() {
+            write_texture_as_png(bytes, &tile_dest)?;
+            changed = true;
+        } else if let Some(bytes) = splash_bytes.as_deref() {
+            write_texture_as_png(bytes, &tile_dest)?;
+            changed = true;
+        } else if let Some(bytes) = meta_image.as_deref() {
+            std::fs::write(&tile_dest, bytes).context("writing tile PNG")?;
+            changed = true;
+        } else if let Some(name) = champion {
+            if fetch_ddragon_tile(name, &tile_dest).is_ok() {
+                changed = true;
+            }
+        }
+    }
+
+    if needs_icon {
+        if let Some(name) = champion {
+            if cached_champion_icon(icons_dir, name).is_some() {
+                changed = true;
+            }
+        }
+    }
+
+    Ok(changed)
+}
+
 /// Downloads the base champion loading portrait from Data Dragon, decodes
 /// the JPEG, and writes it as a PNG at `dest`. Uses the `/loading/` endpoint
 /// (308×560 portrait) rather than `/splash/` (1215×717 landscape) so the
@@ -718,7 +888,15 @@ fn sanitize_champion_name(champion: &str) -> Option<String> {
 fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
     let url = url.to_string();
     let dest = dest.to_path_buf();
-    std::thread::spawn(move || -> Result<()> {
+    let bytes = fetch_image_bytes(&url)?;
+    let img = image::load_from_memory(&bytes).context("decoding image")?;
+    img.save(&dest).context("writing PNG")?;
+    Ok(())
+}
+
+fn fetch_image_bytes(url: &str) -> Result<Vec<u8>> {
+    let url = url.to_string();
+    std::thread::spawn(move || -> Result<Vec<u8>> {
         let client = reqwest::blocking::Client::builder()
             .timeout(DDRAGON_TIMEOUT)
             .build()
@@ -727,10 +905,7 @@ fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
         if !resp.status().is_success() {
             return Err(anyhow!("Data Dragon returned status {}", resp.status()));
         }
-        let bytes = resp.bytes().context("reading Data Dragon response")?;
-        let img = image::load_from_memory(&bytes).context("decoding image")?;
-        img.save(&dest).context("writing PNG")?;
-        Ok(())
+        Ok(resp.bytes().context("reading Data Dragon response")?.to_vec())
     })
     .join()
     .map_err(|_| anyhow!("image download thread panicked"))?

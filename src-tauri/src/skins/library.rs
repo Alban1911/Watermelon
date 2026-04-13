@@ -81,40 +81,27 @@ pub fn scan(
         let version = meta.as_ref().and_then(|m| m.version.clone());
         let description = meta.as_ref().and_then(|m| m.description.clone());
 
-        let preview = preview::cached_or_extract(
-            &path,
-            previews_dir,
-            &stem,
-            meta.as_ref().and_then(|m| m.champion.as_deref()),
-        )
-        .ok()
-        .flatten()
-        .map(|p| p.to_string_lossy().into_owned());
+        let preview = preview::cached_preview_path(&path, previews_dir, &stem)
+            .map(|p| p.to_string_lossy().into_owned());
 
-        let background_preview = preview::cached_or_extract_background(
+        let background_preview = preview::cached_background_preview_path(
             &path,
             background_previews_dir,
             &stem,
-            meta.as_ref().and_then(|m| m.champion.as_deref()),
         )
-        .ok()
-        .flatten()
         .map(|p| p.to_string_lossy().into_owned());
 
-        let tile_preview = preview::cached_or_extract_tile(
+        let tile_preview = preview::cached_tile_preview_path(
             &path,
             tile_previews_dir,
             &stem,
-            meta.as_ref().and_then(|m| m.champion.as_deref()),
         )
-        .ok()
-        .flatten()
         .map(|p| p.to_string_lossy().into_owned());
 
         let champion_icon = icon_cache
             .entry(champion.clone())
             .or_insert_with(|| {
-                preview::cached_champion_icon(icons_dir, &champion)
+                preview::cached_champion_icon_path(icons_dir, &champion)
                     .map(|p| p.to_string_lossy().into_owned())
             })
             .clone();
