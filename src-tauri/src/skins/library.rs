@@ -17,6 +17,8 @@ pub struct SkinEntry {
     pub version: Option<String>,
     pub description: Option<String>,
     pub preview: Option<String>,
+    pub background_preview: Option<String>,
+    pub tile_preview: Option<String>,
     pub champion_icon: Option<String>,
     pub enabled: bool,
 }
@@ -39,6 +41,8 @@ pub struct SkinLibrary {
 pub fn scan(
     skins_dir: &Path,
     previews_dir: &Path,
+    background_previews_dir: &Path,
+    tile_previews_dir: &Path,
     icons_dir: &Path,
     state: &SkinState,
 ) -> Result<Vec<SkinEntry>> {
@@ -87,6 +91,26 @@ pub fn scan(
         .flatten()
         .map(|p| p.to_string_lossy().into_owned());
 
+        let background_preview = preview::cached_or_extract_background(
+            &path,
+            background_previews_dir,
+            &stem,
+            meta.as_ref().and_then(|m| m.champion.as_deref()),
+        )
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
+
+        let tile_preview = preview::cached_or_extract_tile(
+            &path,
+            tile_previews_dir,
+            &stem,
+            meta.as_ref().and_then(|m| m.champion.as_deref()),
+        )
+        .ok()
+        .flatten()
+        .map(|p| p.to_string_lossy().into_owned());
+
         let champion_icon = icon_cache
             .entry(champion.clone())
             .or_insert_with(|| {
@@ -103,6 +127,8 @@ pub fn scan(
             version,
             description,
             preview,
+            background_preview,
+            tile_preview,
             champion_icon,
             enabled: state.is_enabled(&stem),
         });

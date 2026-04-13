@@ -23,6 +23,15 @@ struct IndexEntry {
     id: i64,
     champion_id: i64,
     name: String,
+    /// Whether Talon has a cached splash PNG for this skin and can
+    /// therefore serve `https://talon/assets/splash/<fileStem>.png`.
+    has_splash_asset: bool,
+    /// Whether Talon has a cached composed background PNG for this skin and
+    /// can therefore serve `https://talon/assets/background/<fileStem>.png`.
+    has_background_asset: bool,
+    /// Whether Talon has a cached HUD/icon PNG for this skin and can
+    /// therefore serve `https://talon/assets/tile/<fileStem>.png`.
+    has_tile_asset: bool,
     /// File stem of the backing `.fantome`. Reserved for later click
     /// handling that needs to look the real skin file up again.
     file_stem: String,
@@ -60,6 +69,9 @@ pub fn regenerate(
             id: make_custom_id(champion_id, idx_within),
             champion_id,
             name: skin.name.clone(),
+            has_splash_asset: skin.preview.is_some(),
+            has_background_asset: skin.background_preview.is_some(),
+            has_tile_asset: skin.tile_preview.is_some(),
             file_stem: skin.id.clone(),
         });
     }

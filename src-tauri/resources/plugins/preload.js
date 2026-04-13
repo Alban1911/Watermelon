@@ -11,9 +11,12 @@
 //      splices the current champion's Talon skins into the data array
 //      before Ember renders it.
 //
-// Images still reuse the base skin's splashPath and tilePath as
-// placeholders. Real previews via `https://talon/assets/<id>.png` are
-// Step 5c.
+// Prefer separate Talon-served assets for background vs tile:
+//   - `https://talon/assets/background/<fileStem>.png`
+//   - `https://talon/assets/splash/<fileStem>.png`
+//   - `https://talon/assets/tile/<fileStem>.png`
+// so the carousel tile can use a HUD-style icon while the background
+// keeps using full splash art.
 
 (function () {
     'use strict';
@@ -30,6 +33,9 @@
     const TARGET_PLUGIN = 'rcp-fe-lol-champ-select';
     const CAROUSEL_CACHE_KEY = '/lol-champ-select/v1/skin-carousel-skins';
     const TALON_INDEX_URL = 'https://talon/skins/all';
+    const TALON_BACKGROUND_ASSET_BASE_URL = 'https://talon/assets/background/';
+    const TALON_SPLASH_ASSET_BASE_URL = 'https://talon/assets/splash/';
+    const TALON_TILE_ASSET_BASE_URL = 'https://talon/assets/tile/';
     // Custom skin ids live above this floor so we can detect ones
     // already injected into a value.data array and skip double-inject.
     const CUSTOM_ID_FLOOR = 9_000_000;
@@ -151,37 +157,80 @@
         log('cache._data.set hook installed — waiting for champ-select');
     }
 
-    // Builds a carousel entry from a Talon index entry. Image paths
-    // reuse the base skin's so the tile renders without external
-    // assets. Real preview images via `https://talon/assets/...` come
-    // in the next step.
+    function makeAssetUrl(baseUrl, fileStem) {
+        if (!fileStem) {
+            return null;
+        }
+        return baseUrl + encodeURIComponent(fileStem) + '.png';
+    }
+
+    function setIfPresent(target, key, value) {
+        if (Object.prototype.hasOwnProperty.call(target, key)) {
+            target[key] = value;
+        }
+    }
+
+    // Builds a carousel entry from a Talon index entry. Start from the
+    // native base-skin object so we preserve whatever extra fields the
+    // current League client expects, then override the identity and the
+    // image paths we know about.
     function makeCarouselSkin(entry, baseSkin, championId) {
-        return {
+        const splashAssetUrl =
+            entry && entry.hasSplashAsset
+                ? makeAssetUrl(TALON_SPLASH_ASSET_BASE_URL, entry.fileStem)
+                : null;
+        const backgroundAssetUrl =
+            entry && entry.hasBackgroundAsset
+                ? makeAssetUrl(TALON_BACKGROUND_ASSET_BASE_URL, entry.fileStem)
+                : null;
+        const tileAssetUrl =
+            entry && entry.hasTileAsset
+                ? makeAssetUrl(TALON_TILE_ASSET_BASE_URL, entry.fileStem)
+                : null;
+        const skin = {
+            ...baseSkin,
             championId: championId,
-            childSkins: [],
+            childSkins: Array.isArray(baseSkin.childSkins) ? [] : baseSkin.childSkins,
             chromaPreviewPath: null,
             disabled: false,
-            emblems: [],
+            emblems: Array.isArray(baseSkin.emblems) ? [] : baseSkin.emblems,
             groupSplash: '',
             id: entry.id,
             isBase: false,
             isChampionUnlocked: true,
             name: entry.name,
             ownership: {
+                ...(baseSkin.ownership || {}),
                 loyaltyReward: false,
                 owned: true,
                 rental: { rented: false },
                 xboxGPReward: false,
             },
-            productType: null,
-            rarityGemPath: '',
-            skinAugments: {},
-            splashPath: baseSkin.splashPath || '',
-            splashVideoPath: null,
             stillObtainable: false,
-            tilePath: baseSkin.tilePath || '',
             unlocked: true,
         };
+
+        const finalSplashUrl = backgroundAssetUrl || splashAssetUrl || baseSkin.splashPath || '';
+        const finalTileUrl = tileAssetUrl || baseSkin.tilePath || finalSplashUrl;
+
+        skin.splashPath = finalSplashUrl;
+        skin.tilePath = finalTileUrl;
+
+        // Riot has changed the exact image-field mix across client builds.
+        // Override every art-like field we commonly see so Talon entries
+        // track native behavior more closely.
+        setIfPresent(skin, 'uncenteredSplashPath', finalSplashUrl);
+        setIfPresent(skin, 'centeredSplashPath', finalSplashUrl);
+        setIfPresent(skin, 'loadScreenPath', finalSplashUrl);
+        setIfPresent(skin, 'loadscreenPath', finalSplashUrl);
+        setIfPresent(skin, 'groupSplash', finalSplashUrl);
+        setIfPresent(skin, 'cardSplashPath', finalTileUrl);
+        setIfPresent(skin, 'tilePath', finalTileUrl);
+        setIfPresent(skin, 'iconPath', finalTileUrl);
+        setIfPresent(skin, 'squarePortraitPath', finalTileUrl);
+        setIfPresent(skin, 'chromaPreviewPath', finalTileUrl);
+
+        return skin;
     }
 
     log('document.dispatchEvent hook installed');

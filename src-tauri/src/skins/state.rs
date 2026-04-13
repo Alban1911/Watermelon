@@ -46,4 +46,13 @@ impl SkinState {
             self.enabled.remove(&id);
         }
     }
+
+    pub fn rename_id(&mut self, old_id: &str, new_id: &str) {
+        if old_id == new_id {
+            return;
+        }
+        if self.enabled.remove(old_id) {
+            self.enabled.insert(new_id.to_string());
+        }
+    }
 }

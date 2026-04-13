@@ -20,8 +20,10 @@
 //     base64-embedding into JSON.
 //
 // Routes:
-//   GET /skins/*   → stream `<appdata>/com.talon.app/skins_index.json`
-//   GET /assets/*  → reserved for skin preview images (not yet wired)
+//   GET /skins/*          -> stream `<appdata>/com.talon.app/skins_index.json`
+//   GET /assets/background/* -> stream `<appdata>/com.talon.app/background_previews/*.png`
+//   GET /assets/splash/*     -> stream `<appdata>/com.talon.app/previews/*.png`
+//   GET /assets/tile/*       -> stream `<appdata>/com.talon.app/tile_previews/*.png`
 //
 // The index file is written by Talon's Rust backend whenever the
 // enabled-skin state changes. We don't parse JSON in C++; we just
@@ -37,6 +39,33 @@ static std::wstring get_skins_index_path()
     return std::wstring(appdata) + L"\\com.talon.app\\skins_index.json";
 }
 
+static std::wstring get_previews_dir()
+{
+    WCHAR appdata[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
+    if (FAILED(hr))
+        return L"";
+    return std::wstring(appdata) + L"\\com.talon.app\\previews";
+}
+
+static std::wstring get_background_previews_dir()
+{
+    WCHAR appdata[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
+    if (FAILED(hr))
+        return L"";
+    return std::wstring(appdata) + L"\\com.talon.app\\background_previews";
+}
+
+static std::wstring get_tile_previews_dir()
+{
+    WCHAR appdata[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
+    if (FAILED(hr))
+        return L"";
+    return std::wstring(appdata) + L"\\com.talon.app\\tile_previews";
+}
+
 static std::u16string wide_to_u16(const std::wstring &ws)
 {
     // On Windows, wchar_t and char16_t are both 16-bit UTF-16 code
@@ -45,6 +74,51 @@ static std::u16string wide_to_u16(const std::wstring &ws)
     return std::u16string(
         reinterpret_cast<const char16_t *>(ws.c_str()),
         ws.length());
+}
+
+static int hex_value(char16_t c)
+{
+    if (c >= u'0' && c <= u'9')
+        return c - u'0';
+    if (c >= u'a' && c <= u'f')
+        return 10 + (c - u'a');
+    if (c >= u'A' && c <= u'F')
+        return 10 + (c - u'A');
+    return -1;
+}
+
+static bool url_decode_path_component(const std::u16string &input, std::wstring *output)
+{
+    if (output == nullptr)
+        return false;
+
+    output->clear();
+    output->reserve(input.size());
+
+    for (size_t i = 0; i < input.size(); ++i)
+    {
+        char16_t c = input[i];
+        if (c == u'%')
+        {
+            if (i + 2 >= input.size())
+                return false;
+            int hi = hex_value(input[i + 1]);
+            int lo = hex_value(input[i + 2]);
+            if (hi < 0 || lo < 0)
+                return false;
+            output->push_back(static_cast<wchar_t>((hi << 4) | lo));
+            i += 2;
+            continue;
+        }
+        if (c == u'+')
+        {
+            output->push_back(L' ');
+            continue;
+        }
+        output->push_back(static_cast<wchar_t>(c));
+    }
+
+    return true;
 }
 
 class TalonResourceHandler : public CefRefCount<cef_resource_handler_t>
@@ -76,6 +150,28 @@ private:
     // consumed the file name.
     std::u16string file_path_storage_;
 
+    bool open_file_stream(const std::wstring &wpath, const std::u16string &mime)
+    {
+        if (wpath.empty())
+            return false;
+
+        std::filesystem::path fp(wpath);
+        if (!std::filesystem::is_regular_file(fp))
+            return false;
+
+        file_path_storage_ = wide_to_u16(wpath);
+        stream_ = cef_stream_reader_create_for_file(
+            &CefStr::wrap(file_path_storage_));
+        if (stream_ == nullptr)
+            return false;
+
+        stream_->seek(stream_, 0, SEEK_END);
+        length_ = stream_->tell(stream_);
+        stream_->seek(stream_, 0, SEEK_SET);
+        mime_ = mime;
+        return true;
+    }
+
     int _open(cef_request_t *request, int *handle_request, cef_callback_t *callback)
     {
         CefScopedStr url = request->get_url(request);
@@ -91,34 +187,54 @@ private:
 
         if (path.rfind(u"/skins/", 0) == 0)
         {
-            std::wstring wpath = get_skins_index_path();
-            if (!wpath.empty())
+            if (open_file_stream(get_skins_index_path(), u"application/json"))
             {
-                std::filesystem::path fp(wpath);
-                if (std::filesystem::is_regular_file(fp))
-                {
-                    file_path_storage_ = wide_to_u16(wpath);
-                    stream_ = cef_stream_reader_create_for_file(
-                        &CefStr::wrap(file_path_storage_));
-                    if (stream_ != nullptr)
-                    {
-                        stream_->seek(stream_, 0, SEEK_END);
-                        length_ = stream_->tell(stream_);
-                        stream_->seek(stream_, 0, SEEK_SET);
-                        mime_ = u"application/json";
-                        *handle_request = 1;
-                        return 1;
-                    }
-                }
+                *handle_request = 1;
+                return 1;
             }
 
-            // Index file missing or unreadable → serve an empty object
+            // Index file missing or unreadable -> serve an empty object
             // so preload.js gets a well-formed JSON response.
             static const char EMPTY_INDEX[] = "{}";
             stream_ = cef_stream_reader_create_for_data(
                 (void *)EMPTY_INDEX, sizeof(EMPTY_INDEX) - 1);
             length_ = sizeof(EMPTY_INDEX) - 1;
             mime_ = u"application/json";
+        }
+        else if (path.rfind(u"/assets/", 0) == 0)
+        {
+            std::wstring assets_dir;
+            std::u16string rel;
+            if (path.rfind(u"/assets/background/", 0) == 0) {
+                assets_dir = get_background_previews_dir();
+                rel = path.substr(19);
+            } else if (path.rfind(u"/assets/splash/", 0) == 0) {
+                assets_dir = get_previews_dir();
+                rel = path.substr(15);
+            } else if (path.rfind(u"/assets/tile/", 0) == 0) {
+                assets_dir = get_tile_previews_dir();
+                rel = path.substr(13);
+            }
+
+            if (!assets_dir.empty() &&
+                !rel.empty() &&
+                rel.find(u'/') == std::u16string::npos &&
+                rel.find(u'\\') == std::u16string::npos &&
+                rel.find(u"..") == std::u16string::npos)
+            {
+                std::wstring decoded_filename;
+                if (url_decode_path_component(rel, &decoded_filename))
+                {
+                    std::wstring full_path = assets_dir + L"\\" + decoded_filename;
+                    if (open_file_stream(full_path, u"image/png"))
+                    {
+                        *handle_request = 1;
+                        return 1;
+                    }
+                }
+            }
+
+            stream_ = nullptr;
         }
         else
         {

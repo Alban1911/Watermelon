@@ -63,6 +63,8 @@ fn regenerate_skin_index(app: &AppHandle) {
     let skins = match library::scan(
         &paths.skins_dir,
         &paths.previews_dir,
+        &paths.background_previews_dir,
+        &paths.tile_previews_dir,
         &paths.champion_icons_dir,
         &state,
     ) {
@@ -102,6 +104,8 @@ struct AppPaths {
     skins_dir: PathBuf,
     state_path: PathBuf,
     previews_dir: PathBuf,
+    background_previews_dir: PathBuf,
+    tile_previews_dir: PathBuf,
     champion_icons_dir: PathBuf,
 }
 
@@ -111,8 +115,116 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
         skins_dir: data_dir.join("skins"),
         state_path: data_dir.join("state.json"),
         previews_dir: data_dir.join("previews"),
+        background_previews_dir: data_dir.join("background_previews"),
+        tile_previews_dir: data_dir.join("tile_previews"),
         champion_icons_dir: data_dir.join("champion_icons"),
     })
+}
+
+/// One-time storage migration for pre-normalization libraries. Existing
+/// `.fantome` files used to keep their source filename, which leaked spaces
+/// and punctuation into preview cache names and Talon asset URLs. Rename them
+/// into the normalized import format, carry their preview PNG along, and
+/// update enabled-state ids to match.
+fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
+    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.background_previews_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&paths.tile_previews_dir).map_err(|e| e.to_string())?;
+
+    let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
+    let mut changed = false;
+
+    let entries = std::fs::read_dir(&paths.skins_dir).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let source_path = entry.path();
+        if source_path.extension().and_then(|e| e.to_str()) != Some("fantome") {
+            continue;
+        }
+
+        let Some(file_name) = source_path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(old_id) = source_path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+
+        let normalized_name = normalize_import_filename(file_name);
+        let Some(normalized_stem) = PathBuf::from(&normalized_name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string) else {
+            continue;
+        };
+
+        if old_id == normalized_stem {
+            continue;
+        }
+
+        let target_path = pick_dest(&paths.skins_dir, &normalized_name);
+        let Some(new_id) = target_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string) else {
+            continue;
+        };
+
+        std::fs::rename(&source_path, &target_path)
+            .map_err(|e| format!("renaming {}: {e}", source_path.display()))?;
+
+        let old_preview = paths.previews_dir.join(format!("{old_id}.png"));
+        if old_preview.exists() {
+            let new_preview = paths.previews_dir.join(format!("{new_id}.png"));
+            if old_preview != new_preview {
+                if new_preview.exists() {
+                    let _ = std::fs::remove_file(&new_preview);
+                }
+                std::fs::rename(&old_preview, &new_preview).map_err(|e| {
+                    format!("renaming preview {}: {e}", old_preview.display())
+                })?;
+            }
+        }
+
+        let old_background_preview = paths.background_previews_dir.join(format!("{old_id}.png"));
+        if old_background_preview.exists() {
+            let new_background_preview = paths.background_previews_dir.join(format!("{new_id}.png"));
+            if old_background_preview != new_background_preview {
+                if new_background_preview.exists() {
+                    let _ = std::fs::remove_file(&new_background_preview);
+                }
+                std::fs::rename(&old_background_preview, &new_background_preview).map_err(|e| {
+                    format!(
+                        "renaming background preview {}: {e}",
+                        old_background_preview.display()
+                    )
+                })?;
+            }
+        }
+
+        let old_tile_preview = paths.tile_previews_dir.join(format!("{old_id}.png"));
+        if old_tile_preview.exists() {
+            let new_tile_preview = paths.tile_previews_dir.join(format!("{new_id}.png"));
+            if old_tile_preview != new_tile_preview {
+                if new_tile_preview.exists() {
+                    let _ = std::fs::remove_file(&new_tile_preview);
+                }
+                std::fs::rename(&old_tile_preview, &new_tile_preview).map_err(|e| {
+                    format!("renaming tile preview {}: {e}", old_tile_preview.display())
+                })?;
+            }
+        }
+
+        state.rename_id(old_id, &new_id);
+        changed = true;
+        eprintln!("[Migration] renamed skin '{old_id}' -> '{new_id}'");
+    }
+
+    if changed {
+        state.save(&paths.state_path).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -122,6 +234,8 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
     let skins = library::scan(
         &paths.skins_dir,
         &paths.previews_dir,
+        &paths.background_previews_dir,
+        &paths.tile_previews_dir,
         &paths.champion_icons_dir,
         &state,
     )
@@ -174,6 +288,16 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
         let _ = std::fs::remove_file(&preview_path);
     }
 
+    let background_preview_path = paths.background_previews_dir.join(format!("{id}.png"));
+    if background_preview_path.exists() {
+        let _ = std::fs::remove_file(&background_preview_path);
+    }
+
+    let tile_preview_path = paths.tile_previews_dir.join(format!("{id}.png"));
+    if tile_preview_path.exists() {
+        let _ = std::fs::remove_file(&tile_preview_path);
+    }
+
     let mut state =
         SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     state.set(id, false);
@@ -207,6 +331,38 @@ fn pick_dest(skins_dir: &std::path::Path, filename: &str) -> PathBuf {
     dest
 }
 
+/// Converts an incoming `.fantome` filename into a stable internal storage
+/// name. We keep display names from the mod metadata, so the on-disk name can
+/// be aggressively normalized for filesystem and URL safety.
+fn normalize_import_filename(filename: &str) -> String {
+    let filename_path = PathBuf::from(filename);
+    let raw_stem = filename_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("skin");
+
+    let mut normalized = String::with_capacity(raw_stem.len());
+    let mut last_was_sep = false;
+    for c in raw_stem.chars() {
+        if c.is_ascii_alphanumeric() {
+            normalized.push(c.to_ascii_lowercase());
+            last_was_sep = false;
+        } else if !last_was_sep {
+            normalized.push('-');
+            last_was_sep = true;
+        }
+    }
+
+    let normalized = normalized.trim_matches('-');
+    let stem = if normalized.is_empty() {
+        "skin"
+    } else {
+        normalized
+    };
+
+    format!("{stem}.fantome")
+}
+
 #[tauri::command]
 fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
     let paths = resolve_paths(&app)?;
@@ -224,7 +380,8 @@ fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| "invalid file name".to_string())?;
-    let dest = pick_dest(&paths.skins_dir, file_name);
+    let normalized_name = normalize_import_filename(file_name);
+    let dest = pick_dest(&paths.skins_dir, &normalized_name);
 
     std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
     regenerate_skin_index(&app);
@@ -244,7 +401,8 @@ fn import_skin_bytes(
         return Err("file must have .fantome extension".into());
     }
 
-    let dest = pick_dest(&paths.skins_dir, &filename);
+    let normalized_name = normalize_import_filename(&filename);
+    let dest = pick_dest(&paths.skins_dir, &normalized_name);
     std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
     regenerate_skin_index(&app);
     Ok(())
@@ -291,6 +449,13 @@ pub fn run() {
             pengu_status
         ])
         .setup(|app| {
+            let setup_handle = app.handle().clone();
+            if let Ok(paths) = resolve_paths(&setup_handle) {
+                if let Err(e) = migrate_existing_skin_filenames(&paths) {
+                    eprintln!("[Migration] filename normalize failed: {}", e);
+                }
+            }
+
             if let (Ok(data_dir), Ok(resource_dir)) =
                 (app.path().app_data_dir(), app.path().resource_dir())
             {

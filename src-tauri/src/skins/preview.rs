@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use image::{imageops, RgbaImage};
 use ltk_texture::{Dds, Tex, Texture};
 use std::fs::File;
 use std::io::{Cursor, Read};
@@ -11,6 +12,8 @@ use crate::wad::{bin, CompressionType, WadReader};
 const DDS_MAGIC: [u8; 4] = *b"DDS ";
 const TEX_MAGIC: [u8; 4] = *b"TEX\0";
 const DDRAGON_TIMEOUT: Duration = Duration::from_secs(5);
+const BACKGROUND_WIDTH: u32 = 1920;
+const BACKGROUND_HEIGHT: u32 = 1080;
 
 /// Produces (or refreshes) a PNG preview for a `.fantome` file and returns
 /// its path.
@@ -59,6 +62,96 @@ pub fn cached_or_extract(
     }
 
     Ok(None)
+}
+
+/// Produces (or refreshes) a PNG tile/icon for a `.fantome` file and returns
+/// its path.
+///
+/// Tries three sources in order:
+///   1. **HUD icon texture inside the WAD** â€” parse PROP bins for
+///      `IconSquare` / `IconCircle` / `IconAvatar`-style references and
+///      decode the matching TEX/DDS entry.
+///   2. **`META/image.png`** â€” many mods bundle an already UI-friendly image.
+///   3. **Data Dragon fallback** â€” fetch the base champion square tile.
+pub fn cached_or_extract_tile(
+    fantome_path: &Path,
+    tile_previews_dir: &Path,
+    skin_id: &str,
+    champion: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let dest = tile_previews_dir.join(format!("{skin_id}.png"));
+
+    if cache_is_fresh(fantome_path, &dest) {
+        return Ok(Some(dest));
+    }
+
+    std::fs::create_dir_all(tile_previews_dir).context("creating tile previews dir")?;
+
+    if let Some(texture_bytes) = find_best_tile_texture(fantome_path)? {
+        write_texture_as_png(&texture_bytes, &dest)?;
+        return Ok(Some(dest));
+    }
+
+    if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
+        write_texture_as_png(&texture_bytes, &dest)?;
+        return Ok(Some(dest));
+    }
+
+    if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
+        std::fs::write(&dest, &bytes).context("writing META/image.png to tile cache")?;
+        return Ok(Some(dest));
+    }
+
+    if let Some(name) = champion {
+        if fetch_ddragon_tile(name, &dest).is_ok() {
+            return Ok(Some(dest));
+        }
+    }
+
+    Ok(None)
+}
+
+/// Produces (or refreshes) a carousel-background-safe PNG for a `.fantome`
+/// file and returns its path.
+///
+/// The generated image preserves the splash art's native aspect ratio by
+/// centering a contained foreground on top of a blurred cover background.
+/// This avoids the client stretching a portrait-ish splash across the full
+/// carousel backdrop.
+pub fn cached_or_extract_background(
+    fantome_path: &Path,
+    background_previews_dir: &Path,
+    skin_id: &str,
+    champion: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    let dest = background_previews_dir.join(format!("{skin_id}.png"));
+
+    if cache_is_fresh(fantome_path, &dest) {
+        return Ok(Some(dest));
+    }
+
+    std::fs::create_dir_all(background_previews_dir)
+        .context("creating background previews dir")?;
+
+    let source_bytes = if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
+        texture_bytes
+    } else if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
+        bytes
+    } else if let Some(name) = champion {
+        let temp = background_previews_dir.join(format!("{skin_id}.source.png"));
+        if fetch_ddragon_splash(name, &temp).is_ok() {
+            let bytes = std::fs::read(&temp).context("reading fetched background source")?;
+            let _ = std::fs::remove_file(&temp);
+            bytes
+        } else {
+            return Ok(None);
+        }
+    } else {
+        return Ok(None);
+    };
+
+    compose_background_png(&source_bytes, &dest)?;
+    Ok(Some(dest))
 }
 
 fn cache_is_fresh(fantome_path: &Path, cached: &Path) -> bool {
@@ -133,6 +226,27 @@ fn find_best_splash_texture(
     )))
 }
 
+/// Finds the most UI-appropriate tile/icon texture inside a `.fantome`.
+/// Prefers explicit HUD icon references from PROP bins over heuristics.
+fn find_best_tile_texture(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
+    let file = File::open(fantome_path).context("open .fantome")?;
+    let mut zip = ZipArchive::new(file).context("read zip")?;
+
+    if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
+        let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
+
+        if let Some(bytes) = find_tile_via_bin(&reader) {
+            return Ok(Some(bytes));
+        }
+        return Ok(None);
+    }
+
+    if let Some(bytes) = find_tile_in_unpacked_zip(&mut zip) {
+        return Ok(Some(bytes));
+    }
+    Ok(None)
+}
+
 /// Walks every PROP bin in the WAD, collects string values from each,
 /// and returns the first one that (a) has `loadscreen` in its basename
 /// and (b) ends in `.tex`/`.dds`, **and** hashes to an entry actually
@@ -174,6 +288,59 @@ fn find_splash_via_bin(reader: &WadReader) -> Option<Vec<u8>> {
     None
 }
 
+/// Walks every PROP bin in the WAD and looks for HUD icon references.
+/// `IconSquare` is the best fit for the champ-select tile, followed by
+/// circle/avatar variants as fallbacks.
+fn find_tile_via_bin(reader: &WadReader) -> Option<Vec<u8>> {
+    let mut square_paths = Vec::new();
+    let mut circle_paths = Vec::new();
+    let mut avatar_paths = Vec::new();
+    let mut hud_paths = Vec::new();
+
+    for entry in reader.entries() {
+        if !matches!(
+            entry.compression,
+            CompressionType::Zstd | CompressionType::Raw
+        ) {
+            continue;
+        }
+        let Ok(decoded) = reader.extract(entry) else { continue };
+        if decoded.len() < 4 || &decoded[..4] != b"PROP" {
+            continue;
+        }
+
+        for path in bin::collect_strings(&decoded) {
+            let lower = path.to_ascii_lowercase();
+            if !is_texture_path(&lower) {
+                continue;
+            }
+            let basename = lower.rsplit('/').next().unwrap_or("");
+            if lower.contains("/hud/") && basename.contains("square") {
+                square_paths.push(lower);
+            } else if lower.contains("/hud/") && basename.contains("circle") {
+                circle_paths.push(lower);
+            } else if lower.contains("/hud/") && basename.contains("avatar") {
+                avatar_paths.push(lower);
+            } else if lower.contains("/hud/") {
+                hud_paths.push(lower);
+            }
+        }
+    }
+
+    for path in square_paths
+        .iter()
+        .chain(circle_paths.iter())
+        .chain(avatar_paths.iter())
+        .chain(hud_paths.iter())
+    {
+        if let Some(bytes) = lookup_texture_by_path(reader, path) {
+            return Some(bytes);
+        }
+    }
+
+    None
+}
+
 /// Tries a small set of known LoL asset path patterns for the base-skin
 /// loadscreen, returning the decoded bytes of the first one that's present
 /// in the WAD.
@@ -199,6 +366,54 @@ fn find_splash_by_known_paths(reader: &WadReader, champion: &str) -> Option<Vec<
             return Some(bytes);
         }
     }
+    None
+}
+
+fn find_tile_in_unpacked_zip(zip: &mut ZipArchive<File>) -> Option<Vec<u8>> {
+    let names: Vec<String> = (0..zip.len())
+        .map(|i| {
+            zip.by_index(i)
+                .map(|e| e.name().to_string())
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let mut ranked = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let lower = name.to_ascii_lowercase();
+        let is_wad_content = lower
+            .strip_prefix("wad/")
+            .and_then(|s| s.split_once(".wad.client/"))
+            .is_some();
+        if !is_wad_content || !is_texture_path(&lower) || !lower.contains("/hud/") {
+            continue;
+        }
+
+        let basename = lower.rsplit('/').next().unwrap_or("");
+        let rank = if basename.contains("square") {
+            0
+        } else if basename.contains("circle") {
+            1
+        } else if basename.contains("avatar") {
+            2
+        } else {
+            3
+        };
+        ranked.push((rank, i));
+    }
+
+    ranked.sort_by_key(|(rank, _)| *rank);
+    for (_, i) in ranked {
+        let Ok(mut entry) = zip.by_index(i) else { continue };
+        let mut buf = Vec::new();
+        if entry.read_to_end(&mut buf).is_err() {
+            continue;
+        }
+        if is_texture_magic(&buf) {
+            return Some(buf);
+        }
+    }
+
     None
 }
 
@@ -295,6 +510,10 @@ fn is_texture_magic(bytes: &[u8]) -> bool {
     bytes.len() >= 4 && (bytes[..4] == DDS_MAGIC || bytes[..4] == TEX_MAGIC)
 }
 
+fn is_texture_path(path: &str) -> bool {
+    path.ends_with(".tex") || path.ends_with(".dds")
+}
+
 struct ScoredCandidate<'a> {
     bytes: &'a [u8],
     deviation: f64,
@@ -351,6 +570,82 @@ fn parse_texture(bytes: &[u8]) -> Option<Texture> {
     }
 }
 
+fn compose_background_png(source_bytes: &[u8], dest: &Path) -> Result<()> {
+    let src = decode_image_to_rgba(source_bytes)?;
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return Err(anyhow!("background source has zero dimension"));
+    }
+
+    let cover_scale = f32::max(
+        BACKGROUND_WIDTH as f32 / src_w as f32,
+        BACKGROUND_HEIGHT as f32 / src_h as f32,
+    );
+    let cover_w = ((src_w as f32) * cover_scale).ceil() as u32;
+    let cover_h = ((src_h as f32) * cover_scale).ceil() as u32;
+    let cover = imageops::resize(&src, cover_w, cover_h, imageops::FilterType::Lanczos3);
+    let crop_x = (cover_w.saturating_sub(BACKGROUND_WIDTH)) / 2;
+    let crop_y = (cover_h.saturating_sub(BACKGROUND_HEIGHT)) / 2;
+    let mut canvas = imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
+        .to_image();
+    canvas = imageops::blur(&canvas, 18.0);
+
+    // Dim the blurred fill a bit so the centered art remains the focal point.
+    for pixel in canvas.pixels_mut() {
+        pixel[0] = ((pixel[0] as f32) * 0.55) as u8;
+        pixel[1] = ((pixel[1] as f32) * 0.55) as u8;
+        pixel[2] = ((pixel[2] as f32) * 0.55) as u8;
+    }
+
+    let contain_scale = f32::min(
+        (BACKGROUND_WIDTH as f32 * 0.88) / src_w as f32,
+        (BACKGROUND_HEIGHT as f32 * 0.9) / src_h as f32,
+    );
+    let fg_w = ((src_w as f32) * contain_scale).round().max(1.0) as u32;
+    let fg_h = ((src_h as f32) * contain_scale).round().max(1.0) as u32;
+    let foreground = imageops::resize(&src, fg_w, fg_h, imageops::FilterType::Lanczos3);
+
+    // Lift the art a bit so faces land closer to the carousel focus ring.
+    let offset_x = ((BACKGROUND_WIDTH - fg_w) / 2) as i64;
+    let offset_y = (((BACKGROUND_HEIGHT - fg_h) as f32) * 0.42).round() as i64;
+    imageops::overlay(&mut canvas, &foreground, offset_x, offset_y);
+
+    // Subtle vignette so the blurred fill doesn't compete with the foreground.
+    apply_vignette(&mut canvas);
+    canvas.save(dest).context("writing background PNG")?;
+    Ok(())
+}
+
+fn decode_image_to_rgba(bytes: &[u8]) -> Result<RgbaImage> {
+    if let Some(texture) = parse_texture(bytes) {
+        let surface = texture
+            .decode_mipmap(0)
+            .map_err(|e| anyhow!("decode mipmap: {e}"))?;
+        return surface
+            .into_rgba_image()
+            .map_err(|e| anyhow!("to rgba: {e}"));
+    }
+
+    let img = image::load_from_memory(bytes).context("decoding image source")?;
+    Ok(img.into_rgba8())
+}
+
+fn apply_vignette(canvas: &mut RgbaImage) {
+    let cx = BACKGROUND_WIDTH as f32 / 2.0;
+    let cy = BACKGROUND_HEIGHT as f32 / 2.0;
+    let max_dist = (cx * cx + cy * cy).sqrt();
+
+    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
+        let dx = x as f32 - cx;
+        let dy = y as f32 - cy;
+        let dist = (dx * dx + dy * dy).sqrt() / max_dist;
+        let shade = 1.0 - (dist * dist * 0.28);
+        pixel[0] = ((pixel[0] as f32) * shade) as u8;
+        pixel[1] = ((pixel[1] as f32) * shade) as u8;
+        pixel[2] = ((pixel[2] as f32) * shade) as u8;
+    }
+}
+
 /// Decodes a DDS or TEX byte slice and writes the result as a PNG at `dest`.
 fn write_texture_as_png(bytes: &[u8], dest: &Path) -> Result<()> {
     let texture = parse_texture(bytes).ok_or_else(|| anyhow!("not a DDS or TEX file"))?;
@@ -396,6 +691,15 @@ fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
     fetch_and_save_as_png(&url, dest)
 }
 
+fn fetch_ddragon_tile(champion: &str, dest: &Path) -> Result<()> {
+    let sanitized = sanitize_champion_name(champion)
+        .ok_or_else(|| anyhow!("empty champion name"))?;
+    let url = format!(
+        "https://ddragon.leagueoflegends.com/cdn/img/champion/tiles/{sanitized}_0.jpg"
+    );
+    fetch_and_save_as_png(&url, dest)
+}
+
 /// Strips everything non-alphanumeric from a champion name so "Miss Fortune"
 /// becomes "MissFortune" etc. — matches Data Dragon's internal naming for
 /// most champions. Returns `None` if the result is empty.
@@ -412,16 +716,22 @@ fn sanitize_champion_name(champion: &str) -> Option<String> {
 }
 
 fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(DDRAGON_TIMEOUT)
-        .build()
-        .context("building HTTP client")?;
-    let resp = client.get(url).send().context("fetching Data Dragon")?;
-    if !resp.status().is_success() {
-        return Err(anyhow!("Data Dragon returned status {}", resp.status()));
-    }
-    let bytes = resp.bytes().context("reading Data Dragon response")?;
-    let img = image::load_from_memory(&bytes).context("decoding image")?;
-    img.save(dest).context("writing PNG")?;
-    Ok(())
+    let url = url.to_string();
+    let dest = dest.to_path_buf();
+    std::thread::spawn(move || -> Result<()> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(DDRAGON_TIMEOUT)
+            .build()
+            .context("building HTTP client")?;
+        let resp = client.get(&url).send().context("fetching Data Dragon")?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("Data Dragon returned status {}", resp.status()));
+        }
+        let bytes = resp.bytes().context("reading Data Dragon response")?;
+        let img = image::load_from_memory(&bytes).context("decoding image")?;
+        img.save(&dest).context("writing PNG")?;
+        Ok(())
+    })
+    .join()
+    .map_err(|_| anyhow!("image download thread panicked"))?
 }
