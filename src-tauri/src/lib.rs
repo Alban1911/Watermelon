@@ -146,12 +146,23 @@ fn warm_assets_for_skin(app: &AppHandle, path: &std::path::Path) -> Result<bool,
     .map_err(|e| e.to_string())
 }
 
+/// Releases `ASSET_WARMING` on drop so a panic inside the warmup task
+/// doesn't strand the flag in the "in progress" state forever.
+struct WarmupGuard;
+
+impl Drop for WarmupGuard {
+    fn drop(&mut self) {
+        ASSET_WARMING.store(false, Ordering::Release);
+    }
+}
+
 fn spawn_asset_warmup(app: AppHandle) {
     if ASSET_WARMING.swap(true, Ordering::AcqRel) {
         return;
     }
 
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = WarmupGuard;
         let changed = match warm_assets_for_library(&app) {
             Ok(changed) => changed,
             Err(e) => {
@@ -163,7 +174,6 @@ fn spawn_asset_warmup(app: AppHandle) {
             regenerate_skin_index(&app);
             let _ = app.emit("library:assets-updated", ());
         }
-        ASSET_WARMING.store(false, Ordering::Release);
     });
 }
 
@@ -266,53 +276,30 @@ fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
             continue;
         };
 
-        std::fs::rename(&source_path, &target_path)
-            .map_err(|e| format!("renaming {}: {e}", source_path.display()))?;
-
-        let old_preview = paths.previews_dir.join(format!("{old_id}.png"));
-        if old_preview.exists() {
-            let new_preview = paths.previews_dir.join(format!("{new_id}.png"));
-            if old_preview != new_preview {
-                if new_preview.exists() {
-                    let _ = std::fs::remove_file(&new_preview);
-                }
-                std::fs::rename(&old_preview, &new_preview).map_err(|e| {
-                    format!("renaming preview {}: {e}", old_preview.display())
-                })?;
-            }
+        if let Err(e) = std::fs::rename(&source_path, &target_path) {
+            eprintln!(
+                "[Migration] skipping {}: rename failed: {e}",
+                source_path.display()
+            );
+            continue;
         }
 
-        let old_background_preview = paths.background_previews_dir.join(format!("{old_id}.png"));
-        if old_background_preview.exists() {
-            let new_background_preview = paths.background_previews_dir.join(format!("{new_id}.png"));
-            if old_background_preview != new_background_preview {
-                if new_background_preview.exists() {
-                    let _ = std::fs::remove_file(&new_background_preview);
-                }
-                std::fs::rename(&old_background_preview, &new_background_preview).map_err(|e| {
-                    format!(
-                        "renaming background preview {}: {e}",
-                        old_background_preview.display()
-                    )
-                })?;
-            }
-        }
-
-        let old_tile_preview = paths.tile_previews_dir.join(format!("{old_id}.png"));
-        if old_tile_preview.exists() {
-            let new_tile_preview = paths.tile_previews_dir.join(format!("{new_id}.png"));
-            if old_tile_preview != new_tile_preview {
-                if new_tile_preview.exists() {
-                    let _ = std::fs::remove_file(&new_tile_preview);
-                }
-                std::fs::rename(&old_tile_preview, &new_tile_preview).map_err(|e| {
-                    format!("renaming tile preview {}: {e}", old_tile_preview.display())
-                })?;
-            }
-        }
-
+        // Skin file + enabled state are the atomic unit: once the rename
+        // lands, we must update state in lockstep or the skin will appear
+        // disabled next startup. Preview renames come after and are
+        // best-effort — a stale/missing preview regenerates automatically.
         state.rename_id(old_id, &new_id);
         changed = true;
+
+        soft_rename_preview(&paths.previews_dir, old_id, &new_id, "preview");
+        soft_rename_preview(
+            &paths.background_previews_dir,
+            old_id,
+            &new_id,
+            "background",
+        );
+        soft_rename_preview(&paths.tile_previews_dir, old_id, &new_id, "tile");
+
         eprintln!("[Migration] renamed skin '{old_id}' -> '{new_id}'");
     }
 
@@ -321,6 +308,27 @@ fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn soft_rename_preview(dir: &std::path::Path, old_id: &str, new_id: &str, kind: &str) {
+    let old = dir.join(format!("{old_id}.png"));
+    if !old.exists() {
+        return;
+    }
+    let new = dir.join(format!("{new_id}.png"));
+    if old == new {
+        return;
+    }
+    if new.exists() {
+        let _ = std::fs::remove_file(&new);
+    }
+    if let Err(e) = std::fs::rename(&old, &new) {
+        eprintln!(
+            "[Migration] {kind} rename {} -> {} failed: {e}",
+            old.display(),
+            new.display()
+        );
+    }
 }
 
 #[tauri::command]

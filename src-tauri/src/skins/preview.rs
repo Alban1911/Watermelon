@@ -15,56 +15,6 @@ const DDRAGON_TIMEOUT: Duration = Duration::from_secs(5);
 const BACKGROUND_WIDTH: u32 = 1920;
 const BACKGROUND_HEIGHT: u32 = 1080;
 
-/// Produces (or refreshes) a PNG preview for a `.fantome` file and returns
-/// its path.
-///
-/// Tries three sources in order:
-///   1. **Splash texture inside the WAD** — walk every DDS/TEX entry
-///      (packed or unpacked layout), parse headers for dimensions, score
-///      by aspect-ratio closeness to 16:9, pick the best match and decode
-///      via `ltk_texture`. Handles both Riot's native `.tex` format and
-///      standard DDS with one unified pipeline. This is the authoritative
-///      in-game asset when the mod ships one.
-///   2. **`META/image.png`** — some mod creators bundle a pre-rendered
-///      preview PNG. Used as a fallback when the mod has no splash-shaped
-///      texture in its WAD, because the bundled image is often a square
-///      icon rather than the actual splash.
-///   3. **Data Dragon fallback** — fetch the base champion loading
-///      portrait from ddragon.leagueoflegends.com using the champion name.
-#[allow(dead_code)]
-pub fn cached_or_extract(
-    fantome_path: &Path,
-    previews_dir: &Path,
-    skin_id: &str,
-    champion: Option<&str>,
-) -> Result<Option<PathBuf>> {
-    let dest = previews_dir.join(format!("{skin_id}.png"));
-
-    if cache_is_fresh(fantome_path, &dest) {
-        return Ok(Some(dest));
-    }
-
-    std::fs::create_dir_all(previews_dir).context("creating previews dir")?;
-
-    if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
-        write_texture_as_png(&texture_bytes, &dest)?;
-        return Ok(Some(dest));
-    }
-
-    if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
-        std::fs::write(&dest, &bytes).context("writing META/image.png to cache")?;
-        return Ok(Some(dest));
-    }
-
-    if let Some(name) = champion {
-        if fetch_ddragon_splash(name, &dest).is_ok() {
-            return Ok(Some(dest));
-        }
-    }
-
-    Ok(None)
-}
-
 pub fn cached_preview_path(
     fantome_path: &Path,
     previews_dir: &Path,
@@ -78,54 +28,6 @@ pub fn cached_preview_path(
     }
 }
 
-/// Produces (or refreshes) a PNG tile/icon for a `.fantome` file and returns
-/// its path.
-///
-/// Tries three sources in order:
-///   1. **HUD icon texture inside the WAD** â€” parse PROP bins for
-///      `IconSquare` / `IconCircle` / `IconAvatar`-style references and
-///      decode the matching TEX/DDS entry.
-///   2. **`META/image.png`** â€” many mods bundle an already UI-friendly image.
-///   3. **Data Dragon fallback** â€” fetch the base champion square tile.
-#[allow(dead_code)]
-pub fn cached_or_extract_tile(
-    fantome_path: &Path,
-    tile_previews_dir: &Path,
-    skin_id: &str,
-    champion: Option<&str>,
-) -> Result<Option<PathBuf>> {
-    let dest = tile_previews_dir.join(format!("{skin_id}.png"));
-
-    if cache_is_fresh(fantome_path, &dest) {
-        return Ok(Some(dest));
-    }
-
-    std::fs::create_dir_all(tile_previews_dir).context("creating tile previews dir")?;
-
-    if let Some(texture_bytes) = find_best_tile_texture(fantome_path)? {
-        write_texture_as_png(&texture_bytes, &dest)?;
-        return Ok(Some(dest));
-    }
-
-    if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
-        write_texture_as_png(&texture_bytes, &dest)?;
-        return Ok(Some(dest));
-    }
-
-    if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
-        std::fs::write(&dest, &bytes).context("writing META/image.png to tile cache")?;
-        return Ok(Some(dest));
-    }
-
-    if let Some(name) = champion {
-        if fetch_ddragon_tile(name, &dest).is_ok() {
-            return Ok(Some(dest));
-        }
-    }
-
-    Ok(None)
-}
-
 pub fn cached_tile_preview_path(
     fantome_path: &Path,
     tile_previews_dir: &Path,
@@ -137,50 +39,6 @@ pub fn cached_tile_preview_path(
     } else {
         None
     }
-}
-
-/// Produces (or refreshes) a carousel-background-safe PNG for a `.fantome`
-/// file and returns its path.
-///
-/// The generated image preserves the splash art's native aspect ratio by
-/// centering a contained foreground on top of a blurred cover background.
-/// This avoids the client stretching a portrait-ish splash across the full
-/// carousel backdrop.
-#[allow(dead_code)]
-pub fn cached_or_extract_background(
-    fantome_path: &Path,
-    background_previews_dir: &Path,
-    skin_id: &str,
-    champion: Option<&str>,
-) -> Result<Option<PathBuf>> {
-    let dest = background_previews_dir.join(format!("{skin_id}.png"));
-
-    if cache_is_fresh(fantome_path, &dest) {
-        return Ok(Some(dest));
-    }
-
-    std::fs::create_dir_all(background_previews_dir)
-        .context("creating background previews dir")?;
-
-    let source_bytes = if let Some(texture_bytes) = find_best_splash_texture(fantome_path, champion)? {
-        texture_bytes
-    } else if let Ok(Some(bytes)) = read_meta_image(fantome_path) {
-        bytes
-    } else if let Some(name) = champion {
-        let temp = background_previews_dir.join(format!("{skin_id}.source.png"));
-        if fetch_ddragon_splash(name, &temp).is_ok() {
-            let bytes = std::fs::read(&temp).context("reading fetched background source")?;
-            let _ = std::fs::remove_file(&temp);
-            bytes
-        } else {
-            return Ok(None);
-        }
-    } else {
-        return Ok(None);
-    };
-
-    compose_background_png(&source_bytes, &dest)?;
-    Ok(Some(dest))
 }
 
 pub fn cached_background_preview_path(
@@ -208,18 +66,10 @@ fn cache_is_fresh(fantome_path: &Path, cached: &Path) -> bool {
     cache_mtime >= fantome_mtime
 }
 
-/// Looks for a `META/image.png` entry inside the `.fantome` archive and
-/// returns its raw bytes. Some cslol-manager mods bundle a pre-rendered
-/// preview image as part of the mod metadata — when present it's the best
-/// possible preview since the mod creator chose it specifically.
-#[allow(dead_code)]
-fn read_meta_image(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
-    let file = File::open(fantome_path).context("open .fantome")?;
-    let mut zip = ZipArchive::new(file).context("read zip")?;
-    read_meta_image_from_zip(&mut zip)
-}
-
-fn read_meta_image_from_zip(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>>> {
+/// Reads an optional `META/image.png` entry from the `.fantome` archive.
+/// Some cslol-manager mods bundle a pre-rendered preview that's often the
+/// best possible fallback since the mod author chose it specifically.
+fn read_meta_image(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>>> {
     let mut entry = match zip.by_name("META/image.png") {
         Ok(e) => e,
         Err(_) => return Ok(None),
@@ -227,73 +77,6 @@ fn read_meta_image_from_zip(zip: &mut ZipArchive<File>) -> Result<Option<Vec<u8>
     let mut buf = Vec::with_capacity(entry.size() as usize);
     entry.read_to_end(&mut buf).context("read META/image.png")?;
     Ok(Some(buf))
-}
-
-/// Finds the best splash-art texture (DDS or TEX) inside a `.fantome`,
-/// handling both packed (single `.wad.client` binary) and unpacked
-/// (`WAD/Champion.wad.client/...` directory prefix) layouts.
-///
-/// Strategy, in descending order of authority:
-///   1. **Parse the mod's PROP bin files** and read the `Loadscreen.Image`
-///      string (or any loadscreen-ish path referenced from any bin). Hash
-///      that exact path with xxhash64 and look it up in the WAD TOC. This
-///      is the only method that tells us *exactly* which skin slot the
-///      mod is targeting — works for base skin, skin11, skin22, whatever.
-///   2. **Hardcoded path patterns** — xxhash64 a handful of common paths
-///      (`assets/characters/{champion}/skins/base/{champion}loadscreen_0.tex`
-///      and variants). Cheap fallback when bin parsing comes up empty.
-///   3. **Aspect-ratio heuristic** — walk every DDS/TEX entry and pick
-///      the one closest to 16:9. Last resort for mods where neither bin
-///      parsing nor path guessing yields a match (e.g. unpacked mods).
-#[allow(dead_code)]
-fn find_best_splash_texture(
-    fantome_path: &Path,
-    champion: Option<&str>,
-) -> Result<Option<Vec<u8>>> {
-    let file = File::open(fantome_path).context("open .fantome")?;
-    let mut zip = ZipArchive::new(file).context("read zip")?;
-
-    if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
-        let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
-
-        if let Some(bytes) = find_splash_via_bin(&reader) {
-            return Ok(Some(bytes));
-        }
-
-        if let Some(name) = champion {
-            if let Some(bytes) = find_splash_by_known_paths(&reader, name) {
-                return Ok(Some(bytes));
-            }
-        }
-
-        return Ok(pick_best_splash(&collect_textures_from_reader(&reader)));
-    }
-
-    Ok(pick_best_splash(&collect_textures_from_unpacked_zip(
-        &mut zip,
-    )))
-}
-
-/// Finds the most UI-appropriate tile/icon texture inside a `.fantome`.
-/// Prefers explicit HUD icon references from PROP bins over heuristics.
-#[allow(dead_code)]
-fn find_best_tile_texture(fantome_path: &Path) -> Result<Option<Vec<u8>>> {
-    let file = File::open(fantome_path).context("open .fantome")?;
-    let mut zip = ZipArchive::new(file).context("read zip")?;
-
-    if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
-        let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
-
-        if let Some(bytes) = find_tile_via_bin(&reader) {
-            return Ok(Some(bytes));
-        }
-        return Ok(None);
-    }
-
-    if let Some(bytes) = find_tile_in_unpacked_zip(&mut zip) {
-        return Ok(Some(bytes));
-    }
-    Ok(None)
 }
 
 /// Walks every PROP bin in the WAD, collects string values from each,
@@ -720,10 +503,7 @@ pub fn cached_champion_icon(icons_dir: &Path, champion: &str) -> Option<PathBuf>
         return Some(dest);
     }
     std::fs::create_dir_all(icons_dir).ok()?;
-    let url = format!(
-        "https://ddragon.leagueoflegends.com/cdn/img/champion/tiles/{sanitized}_0.jpg"
-    );
-    fetch_and_save_as_png(&url, &dest).ok()?;
+    fetch_and_save_as_png(&ddragon_tile_url(&sanitized), &dest).ok()?;
     Some(dest)
 }
 
@@ -769,7 +549,7 @@ pub fn warm_all_cached_assets(
 
     let file = File::open(fantome_path).context("open .fantome")?;
     let mut zip = ZipArchive::new(file).context("read zip")?;
-    let meta_image = read_meta_image_from_zip(&mut zip)?;
+    let meta_image = read_meta_image(&mut zip)?;
 
     let (splash_bytes, tile_bytes) = if let Some(wad_bytes) = read_packed_wad(&mut zip)? {
         let reader = WadReader::new(&wad_bytes).context("parse WAD")?;
@@ -809,10 +589,7 @@ pub fn warm_all_cached_assets(
             changed = true;
         } else if let Some(name) = champion {
             if let Some(sanitized) = sanitize_champion_name(name) {
-                let url = format!(
-                    "https://ddragon.leagueoflegends.com/cdn/img/champion/loading/{sanitized}_0.jpg"
-                );
-                if let Ok(bytes) = fetch_image_bytes(&url) {
+                if let Ok(bytes) = fetch_image_bytes(&ddragon_loading_url(&sanitized)) {
                     compose_background_png(&bytes, &background_dest)?;
                     changed = true;
                 }
@@ -855,19 +632,13 @@ pub fn warm_all_cached_assets(
 fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
     let sanitized = sanitize_champion_name(champion)
         .ok_or_else(|| anyhow!("empty champion name"))?;
-    let url = format!(
-        "https://ddragon.leagueoflegends.com/cdn/img/champion/loading/{sanitized}_0.jpg"
-    );
-    fetch_and_save_as_png(&url, dest)
+    fetch_and_save_as_png(&ddragon_loading_url(&sanitized), dest)
 }
 
 fn fetch_ddragon_tile(champion: &str, dest: &Path) -> Result<()> {
     let sanitized = sanitize_champion_name(champion)
         .ok_or_else(|| anyhow!("empty champion name"))?;
-    let url = format!(
-        "https://ddragon.leagueoflegends.com/cdn/img/champion/tiles/{sanitized}_0.jpg"
-    );
-    fetch_and_save_as_png(&url, dest)
+    fetch_and_save_as_png(&ddragon_tile_url(&sanitized), dest)
 }
 
 /// Strips everything non-alphanumeric from a champion name so "Miss Fortune"
@@ -883,6 +654,14 @@ fn sanitize_champion_name(champion: &str) -> Option<String> {
     } else {
         Some(s)
     }
+}
+
+fn ddragon_loading_url(sanitized: &str) -> String {
+    format!("https://ddragon.leagueoflegends.com/cdn/img/champion/loading/{sanitized}_0.jpg")
+}
+
+fn ddragon_tile_url(sanitized: &str) -> String {
+    format!("https://ddragon.leagueoflegends.com/cdn/img/champion/tiles/{sanitized}_0.jpg")
 }
 
 fn fetch_and_save_as_png(url: &str, dest: &Path) -> Result<()> {
