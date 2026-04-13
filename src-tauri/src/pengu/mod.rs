@@ -14,9 +14,28 @@ pub fn flag_path(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(FLAG_FILE_NAME)
 }
 
+/// Returns true if the given IFEO `Debugger` value references our own
+/// `core.dll`. Windows paths are case-insensitive so the substring match
+/// uses lowercase on both sides. Used as a guard before touching the key
+/// so we don't stomp on another injector (e.g. upstream) that may have set
+/// its own value while Talon was inactive.
+fn is_ours(debugger_value: &str, core_dll_path: &Path) -> bool {
+    let Some(dll_str) = core_dll_path.to_str() else {
+        return false;
+    };
+    debugger_value
+        .to_ascii_lowercase()
+        .contains(&dll_str.to_ascii_lowercase())
+}
+
 /// Activates IFEO injection. Writes the registry key under HKLM (requires
 /// admin), creates the activation marker, and best-effort kills any running
 /// LeagueClientUx so the parent respawns it through the rundll32 hook.
+///
+/// Before writing, the current IFEO value is read. If it's already set by
+/// another tool (a non-Talon `core.dll` path), activation is skipped and
+/// the existing value is left alone — Talon will run without injection
+/// this session rather than stomping on the other tool's state.
 pub fn activate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     if !core_dll_path.exists() {
         return Err(anyhow!(
@@ -24,6 +43,18 @@ pub fn activate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
             core_dll_path.display()
         ));
     }
+
+    if let Ok(Some(existing)) = ifeo::read_debugger_value() {
+        if !is_ours(&existing, core_dll_path) {
+            eprintln!(
+                "[Pengu] IFEO Debugger already set by another tool: {}",
+                existing.trim()
+            );
+            eprintln!("[Pengu] Skipping activation to avoid stomping on it");
+            return Ok(());
+        }
+    }
+
     ifeo::write_key(core_dll_path).context("writing IFEO registry key")?;
     write_flag(flag_path).context("writing activation marker")?;
     process::terminate_league_client_ux();
@@ -37,29 +68,55 @@ pub fn resolve_core_dll_path<P: AsRef<Path>>(resource_dir: P) -> PathBuf {
     resource_dir.as_ref().join("resources").join("core.dll")
 }
 
-/// Deactivates IFEO injection. Removes the registry key, deletes the
-/// activation marker, and best-effort kills any running LeagueClientUx so
-/// the parent respawns it cleanly without the hook.
-pub fn deactivate(flag_path: &Path) -> Result<()> {
-    ifeo::delete_key().context("deleting IFEO registry key")?;
+/// Deactivates IFEO injection. Removes the registry key and kills any
+/// running LeagueClientUx **only if** the key still references our own
+/// core.dll. If another tool has taken over the IFEO slot in the
+/// meantime, its state is preserved — we just delete our activation
+/// marker and return.
+pub fn deactivate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
+    let key_is_ours = matches!(
+        ifeo::read_debugger_value(),
+        Ok(Some(ref v)) if is_ours(v, core_dll_path)
+    );
+
+    if key_is_ours {
+        ifeo::delete_key().context("deleting IFEO registry key")?;
+        process::terminate_league_client_ux();
+    } else {
+        eprintln!("[Pengu] IFEO Debugger is not ours — leaving it alone");
+    }
+
     let _ = fs::remove_file(flag_path);
-    process::terminate_league_client_ux();
     Ok(())
 }
 
 /// Recovers from a previous run that exited without deactivating. The IFEO
 /// key is non-volatile, so a crash leaves Windows redirecting LeagueClientUx
 /// launches through a rundll32 hook that may now point at a missing dll.
-/// If the activation marker is present, clear the key and the marker.
-pub fn cleanup_if_dirty(flag_path: &Path) {
+/// If the activation marker is present, clear the key (but only if it's
+/// still ours) and the marker.
+pub fn cleanup_if_dirty(core_dll_path: &Path, flag_path: &Path) {
     if !flag_path.exists() {
         return;
     }
-    eprintln!("[Pengu] Detected dirty state from previous run, clearing IFEO key");
-    if let Err(e) = ifeo::delete_key() {
-        eprintln!("[Pengu] Cleanup failed: {} — admin required?", e);
-        return;
+
+    let key_is_ours = matches!(
+        ifeo::read_debugger_value(),
+        Ok(Some(ref v)) if is_ours(v, core_dll_path)
+    );
+
+    if key_is_ours {
+        eprintln!("[Pengu] Detected dirty state from previous run, clearing IFEO key");
+        if let Err(e) = ifeo::delete_key() {
+            eprintln!("[Pengu] Cleanup failed: {} — admin required?", e);
+            return;
+        }
+    } else {
+        eprintln!(
+            "[Pengu] Stale flag file from previous run, but IFEO is not ours — leaving key alone"
+        );
     }
+
     let _ = fs::remove_file(flag_path);
 }
 

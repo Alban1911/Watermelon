@@ -1,10 +1,20 @@
-// Loaded by core.dll into the main page's V8 context. Hooks the LCU
-// client API so the champ-select skin carousel renders every skin as
-// owned/selectable. Force-unlocks for now; per-skin overrides are wired
-// up in a later phase.
+// Talon preload — Step 3 of the carousel-injection rework.
 //
-// `window.__native` and `window.Pengu` are pre-populated by the native
-// loader before this script runs but are not used here.
+// When the rcp-fe-lol-champ-select plugin announces itself via a
+// `riotPlugin.announce:` DOM event, we wrap the event's
+// `registrationHandler` so we can capture the plugin's exported API
+// once init resolves (same trick PenguLoader uses internally).
+//
+// Once we have the API, we wrap `api.champSelectBinding.cache._data.set`
+// to splice a hardcoded test skin entry into the carousel data before
+// Ember renders it. The test skin reuses the base skin's splashPath and
+// tilePath so no external image dependency is required — the user
+// should see a second carousel entry named "Talon Test Skin" with the
+// same artwork as the base skin.
+//
+// Scope: Step 3 is visual proof only. Clicking the test skin is not
+// handled yet — that's a later step once we have real skin data flowing
+// from Talon's Rust backend.
 
 (function () {
     'use strict';
@@ -17,105 +27,127 @@
 
     log('preload.js loaded');
 
-    function unlockSkin(skin) {
-        if (!skin || typeof skin !== 'object') return;
-        skin.unlocked = true;
-        skin.ownership = {
-            owned: true,
-            loyaltyReward: false,
-            xboxGPReward: false,
-            rental: { rented: false },
-        };
-        if (Array.isArray(skin.childSkins)) {
-            skin.childSkins.forEach(unlockSkin);
-        }
-    }
+    const ANNOUNCE_PREFIX = 'riotPlugin.announce:';
+    const TARGET_PLUGIN = 'rcp-fe-lol-champ-select';
+    const CAROUSEL_CACHE_KEY = '/lol-champ-select/v1/skin-carousel-skins';
+    // Custom skin IDs above 9_000_000 avoid colliding with official skin
+    // IDs (which fit under championId * 1000 + variant).
+    const CUSTOM_SKIN_ID = 9_000_099;
 
-    // Walks an arbitrary LCU payload and unlocks any object that looks
-    // like a skin (heuristic: it has `unlocked` or `ownership`). LCU
-    // session/carousel responses nest skins under varying keys, so the
-    // walker is more robust than addressing fields by name.
-    function walkAndUnlock(value) {
-        if (!value || typeof value !== 'object') return;
-        if (Array.isArray(value)) {
-            value.forEach(walkAndUnlock);
-            return;
-        }
-        if ('unlocked' in value || 'ownership' in value) {
-            unlockSkin(value);
-        }
-        for (const key in value) {
-            walkAndUnlock(value[key]);
-        }
-    }
+    const pluginApis = {};
+    window.__talonPluginApis = pluginApis;
 
-    // ── HTTP fetch hook ───────────────────────────────────────────
-    const originalFetch = window.fetch.bind(window);
-    window.fetch = async function (input, init) {
-        const response = await originalFetch(input, init);
-        const url =
-            typeof input === 'string' ? input : (input && input.url) || '';
+    // ── RCP plugin API capture (Step 2) ──────────────────────────────
+    const originalDispatchEvent = document.dispatchEvent.bind(document);
+    document.dispatchEvent = function (event) {
+        if (
+            event &&
+            typeof event.type === 'string' &&
+            event.type.startsWith(ANNOUNCE_PREFIX)
+        ) {
+            const pluginName = event.type.substring(ANNOUNCE_PREFIX.length);
+            const originalHandler = event.registrationHandler;
 
-        if (url.includes('/lol-champ-select/v1/skin-carousel-skins')) {
-            try {
-                const data = await response.clone().json();
-                if (Array.isArray(data)) {
-                    data.forEach(unlockSkin);
-                    log('unlocked', data.length, 'carousel skins via fetch');
-                    return new Response(JSON.stringify(data), {
-                        status: response.status,
-                        statusText: response.statusText,
-                        headers: response.headers,
+            if (typeof originalHandler === 'function') {
+                try {
+                    Object.defineProperty(event, 'registrationHandler', {
+                        configurable: true,
+                        value: function (registrar) {
+                            return originalHandler.call(this, async function (provider) {
+                                const api = await registrar(provider);
+                                pluginApis[pluginName] = api;
+                                if (pluginName === TARGET_PLUGIN) {
+                                    onChampSelectReady(api);
+                                }
+                                return api;
+                            });
+                        },
                     });
+                } catch (e) {
+                    log('failed to wrap registrationHandler for', pluginName, ':', e && e.message);
                 }
-            } catch (e) {
-                log('fetch hook error:', e);
             }
         }
-        return response;
+        return originalDispatchEvent(event);
     };
 
-    // ── WebSocket push hook ───────────────────────────────────────
-    // LCU events arrive as `[8, "topic", { uri, eventType, data }]`.
-    const OriginalWebSocket = window.WebSocket;
-    function PatchedWebSocket(...args) {
-        const ws = new OriginalWebSocket(...args);
-        const origAdd = ws.addEventListener.bind(ws);
-
-        ws.addEventListener = function (type, listener, opts) {
-            if (type !== 'message' || typeof listener !== 'function') {
-                return origAdd(type, listener, opts);
-            }
-            const wrapped = function (event) {
-                let forwarded = event;
-                try {
-                    const parsed = JSON.parse(event.data);
-                    if (Array.isArray(parsed) && parsed.length === 3) {
-                        const payload = parsed[2];
-                        const uri = (payload && payload.uri) || '';
-                        if (
-                            uri.includes('/lol-champ-select/v1/session') ||
-                            uri.includes('/lol-champ-select/v1/skin-carousel-skins')
-                        ) {
-                            walkAndUnlock(payload.data);
-                            forwarded = new MessageEvent('message', {
-                                data: JSON.stringify(parsed),
-                                origin: event.origin,
-                            });
-                        }
-                    }
-                } catch (_) {
-                    // not JSON — ignore
-                }
-                return listener.call(this, forwarded);
-            };
-            return origAdd(type, wrapped, opts);
-        };
-
-        return ws;
+    function onChampSelectReady(api) {
+        const cache = api && api.champSelectBinding && api.champSelectBinding.cache && api.champSelectBinding.cache._data;
+        if (!cache || typeof cache.set !== 'function') {
+            log(
+                TARGET_PLUGIN,
+                'cache._data.set not reachable — api keys:',
+                Object.keys(api || {})
+            );
+            return;
+        }
+        installCacheHook(cache);
     }
-    PatchedWebSocket.prototype = OriginalWebSocket.prototype;
-    window.WebSocket = PatchedWebSocket;
 
-    log('hooks installed');
+    // ── Carousel cache hook (Step 3) ─────────────────────────────────
+    function installCacheHook(cache) {
+        const originalSet = cache.set.bind(cache);
+        cache.set = function (key, value) {
+            if (key !== CAROUSEL_CACHE_KEY) {
+                return originalSet(key, value);
+            }
+            if (!value || !Array.isArray(value.data) || value.data.length === 0) {
+                return originalSet(key, value);
+            }
+            // Idempotent: if we already injected into this data array, skip.
+            if (value.data.some((s) => s && s.id === CUSTOM_SKIN_ID)) {
+                return originalSet(key, value);
+            }
+            const baseSkin = value.data[0];
+            const championId = baseSkin && baseSkin.championId;
+            if (!championId) {
+                log('carousel set: no championId on base skin, skipping injection');
+                return originalSet(key, value);
+            }
+
+            value.data.splice(1, 0, makeTestSkin(baseSkin, championId));
+            log(
+                'injected test skin into carousel for championId',
+                championId,
+                '(total entries:',
+                value.data.length + ')'
+            );
+            return originalSet(key, value);
+        };
+        log('cache._data.set hook installed — waiting for champ-select');
+    }
+
+    // Builds a synthetic carousel entry that matches the shape of an LCU
+    // skin object closely enough for Ember to render it. Image paths reuse
+    // the base skin's so the entry renders without any external assets.
+    function makeTestSkin(baseSkin, championId) {
+        return {
+            championId: championId,
+            childSkins: [],
+            chromaPreviewPath: null,
+            disabled: false,
+            emblems: [],
+            groupSplash: '',
+            id: CUSTOM_SKIN_ID,
+            isBase: false,
+            isChampionUnlocked: true,
+            name: 'Talon Test Skin',
+            ownership: {
+                loyaltyReward: false,
+                owned: true,
+                rental: { rented: false },
+                xboxGPReward: false,
+            },
+            productType: null,
+            rarityGemPath: '',
+            skinAugments: {},
+            splashPath: baseSkin.splashPath || '',
+            splashVideoPath: null,
+            stillObtainable: false,
+            tilePath: baseSkin.tilePath || '',
+            unlocked: true,
+        };
+    }
+
+    log('document.dispatchEvent hook installed');
 })();

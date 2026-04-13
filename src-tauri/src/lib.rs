@@ -12,16 +12,43 @@ use tauri_plugin_opener::OpenerExt;
 /// (which runs on a separate thread without an `AppHandle`) and the Tauri
 /// `ExitRequested` callback can both find it at shutdown time.
 static FLAG_PATH: OnceLock<PathBuf> = OnceLock::new();
+/// Resolved path of our `core.dll`. Needed at shutdown by `pengu::deactivate`
+/// so it can verify the IFEO Debugger value still references our dll before
+/// deleting the registry key.
+static CORE_DLL_PATH: OnceLock<PathBuf> = OnceLock::new();
 
-/// Idempotent shutdown cleanup: deletes the IFEO key, removes the flag
-/// file, and kills any running `LeagueClientUx.exe` so the parent
-/// `LeagueClient.exe` respawns it cleanly without the injection hook.
-fn cleanup_pengu_on_exit() {
-    let Some(flag) = FLAG_PATH.get() else { return };
-    match pengu::deactivate(flag) {
-        Ok(()) => eprintln!("[Pengu] cleaned up on exit"),
-        Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+/// Idempotent shutdown cleanup. Deactivates pengu (deletes IFEO key if it's
+/// still ours, removes the flag file, kills `LeagueClientUx.exe` so the
+/// parent respawns it without injection) AND kills any leftover Vite dev
+/// server on port 1420 — tauri dev's child cleanup doesn't always propagate
+/// Ctrl+C to vite on Windows, so without this the next `pnpm tauri dev`
+/// fails with "Port 1420 is already in use".
+fn cleanup_on_exit() {
+    if let (Some(core_dll), Some(flag)) = (CORE_DLL_PATH.get(), FLAG_PATH.get()) {
+        match pengu::deactivate(core_dll, flag) {
+            Ok(()) => eprintln!("[Pengu] cleaned up on exit"),
+            Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+        }
     }
+    kill_dev_server_port();
+}
+
+fn kill_dev_server_port() {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW: child gets no console, is not in our console
+    // process group, and therefore won't see the Ctrl+C event the parent
+    // shell broadcast. Without this, a child PowerShell spawned from
+    // inside our Ctrl+C handler propagates the signal back up the
+    // console group and takes the user's interactive shell down with it.
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let _ = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-NetTCPConnection -LocalPort 1420 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
 }
 
 use skins::library::{self, SkinLibrary};
@@ -187,8 +214,10 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let flag = pengu::flag_path(&data_dir);
-    pengu::deactivate(&flag).map_err(|e| e.to_string())
+    pengu::deactivate(&core_dll, &flag).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -218,10 +247,12 @@ pub fn run() {
                 (app.path().app_data_dir(), app.path().resource_dir())
             {
                 let flag = pengu::flag_path(&data_dir);
-                let _ = FLAG_PATH.set(flag.clone());
-                pengu::cleanup_if_dirty(&flag);
-
                 let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+                let _ = FLAG_PATH.set(flag.clone());
+                let _ = CORE_DLL_PATH.set(core_dll.clone());
+
+                pengu::cleanup_if_dirty(&core_dll, &flag);
+
                 match pengu::activate(&core_dll, &flag) {
                     Ok(()) => eprintln!("[Pengu] auto-activated on startup"),
                     Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
@@ -232,7 +263,7 @@ pub fn run() {
                 // (Window-close path is handled by RunEvent::ExitRequested
                 // in the run callback below.)
                 if let Err(e) = ctrlc::set_handler(|| {
-                    cleanup_pengu_on_exit();
+                    cleanup_on_exit();
                     std::process::exit(0);
                 }) {
                     eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
@@ -248,7 +279,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|_app, event| {
             if let RunEvent::ExitRequested { .. } = event {
-                cleanup_pengu_on_exit();
+                cleanup_on_exit();
             }
         });
 }
