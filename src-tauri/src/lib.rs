@@ -453,58 +453,68 @@ fn normalize_import_filename(filename: &str) -> String {
 }
 
 #[tauri::command]
-fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
-    let paths = resolve_paths(&app)?;
-    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
+async fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = resolve_paths(&task_app)?;
+        std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
 
-    let source_path = PathBuf::from(&source);
-    if !source_path.is_file() {
-        return Err("selected path is not a file".into());
-    }
-    if source_path.extension().and_then(|e| e.to_str()) != Some("fantome") {
-        return Err("file must have .fantome extension".into());
-    }
+        let source_path = PathBuf::from(&source);
+        if !source_path.is_file() {
+            return Err("selected path is not a file".into());
+        }
+        if source_path.extension().and_then(|e| e.to_str()) != Some("fantome") {
+            return Err("file must have .fantome extension".into());
+        }
 
-    let file_name = source_path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| "invalid file name".to_string())?;
-    let normalized_name = normalize_import_filename(file_name);
-    let dest = pick_dest(&paths.skins_dir, &normalized_name);
+        let file_name = source_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| "invalid file name".to_string())?;
+        let normalized_name = normalize_import_filename(file_name);
+        let dest = pick_dest(&paths.skins_dir, &normalized_name);
 
-    std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
-    let warmed = warm_assets_for_skin(&app, &dest)?;
-    regenerate_skin_index(&app);
-    if warmed {
-        let _ = app.emit("library:assets-updated", ());
-    }
-    spawn_asset_warmup(app.clone());
-    Ok(())
+        std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
+        let warmed = warm_assets_for_skin(&task_app, &dest)?;
+        regenerate_skin_index(&task_app);
+        if warmed {
+            let _ = task_app.emit("library:assets-updated", ());
+        }
+        spawn_asset_warmup(task_app.clone());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn import_skin_bytes(
+async fn import_skin_bytes(
     app: AppHandle,
     filename: String,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    let paths = resolve_paths(&app)?;
-    std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = resolve_paths(&task_app)?;
+        std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
 
-    if !filename.to_lowercase().ends_with(".fantome") {
-        return Err("file must have .fantome extension".into());
-    }
+        if !filename.to_lowercase().ends_with(".fantome") {
+            return Err("file must have .fantome extension".into());
+        }
 
-    let normalized_name = normalize_import_filename(&filename);
-    let dest = pick_dest(&paths.skins_dir, &normalized_name);
-    std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
-    let warmed = warm_assets_for_skin(&app, &dest)?;
-    regenerate_skin_index(&app);
-    if warmed {
-        let _ = app.emit("library:assets-updated", ());
-    }
-    spawn_asset_warmup(app.clone());
-    Ok(())
+        let normalized_name = normalize_import_filename(&filename);
+        let dest = pick_dest(&paths.skins_dir, &normalized_name);
+        std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+        let warmed = warm_assets_for_skin(&task_app, &dest)?;
+        regenerate_skin_index(&task_app);
+        if warmed {
+            let _ = task_app.emit("library:assets-updated", ());
+        }
+        spawn_asset_warmup(task_app.clone());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
