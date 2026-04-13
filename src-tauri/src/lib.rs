@@ -1,10 +1,28 @@
 mod lcu;
+mod pengu;
 mod skins;
 mod wad;
 
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use std::sync::OnceLock;
+use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
+
+/// Path of the activation marker file. Stored here so the Ctrl+C handler
+/// (which runs on a separate thread without an `AppHandle`) and the Tauri
+/// `ExitRequested` callback can both find it at shutdown time.
+static FLAG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Idempotent shutdown cleanup: deletes the IFEO key, removes the flag
+/// file, and kills any running `LeagueClientUx.exe` so the parent
+/// `LeagueClient.exe` respawns it cleanly without the injection hook.
+fn cleanup_pengu_on_exit() {
+    let Some(flag) = FLAG_PATH.get() else { return };
+    match pengu::deactivate(flag) {
+        Ok(()) => eprintln!("[Pengu] cleaned up on exit"),
+        Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+    }
+}
 
 use skins::library::{self, SkinLibrary};
 use skins::state::SkinState;
@@ -157,6 +175,28 @@ fn import_skin_bytes(
     Ok(())
 }
 
+#[tauri::command]
+fn activate_pengu(app: AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+    let flag = pengu::flag_path(&data_dir);
+    pengu::activate(&core_dll, &flag).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let flag = pengu::flag_path(&data_dir);
+    pengu::deactivate(&flag).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn pengu_status(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(pengu::flag_path(&data_dir).exists())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -168,15 +208,47 @@ pub fn run() {
             open_skins_folder,
             import_skin,
             import_skin_bytes,
-            delete_skin
+            delete_skin,
+            activate_pengu,
+            deactivate_pengu,
+            pengu_status
         ])
         .setup(|app| {
+            if let (Ok(data_dir), Ok(resource_dir)) =
+                (app.path().app_data_dir(), app.path().resource_dir())
+            {
+                let flag = pengu::flag_path(&data_dir);
+                let _ = FLAG_PATH.set(flag.clone());
+                pengu::cleanup_if_dirty(&flag);
+
+                let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+                match pengu::activate(&core_dll, &flag) {
+                    Ok(()) => eprintln!("[Pengu] auto-activated on startup"),
+                    Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
+                }
+
+                // Console-side Ctrl+C: installs a Win32 console handler so
+                // the dev terminal's Ctrl+C runs cleanup before exit.
+                // (Window-close path is handled by RunEvent::ExitRequested
+                // in the run callback below.)
+                if let Err(e) = ctrlc::set_handler(|| {
+                    cleanup_pengu_on_exit();
+                    std::process::exit(0);
+                }) {
+                    eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
+                }
+            }
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 lcu::run(handle).await;
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let RunEvent::ExitRequested { .. } = event {
+                cleanup_pengu_on_exit();
+            }
+        });
 }
