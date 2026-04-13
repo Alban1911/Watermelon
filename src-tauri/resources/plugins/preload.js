@@ -243,11 +243,18 @@
         return talonSkins.length;
     }
 
-    function makeAssetUrl(baseUrl, fileStem) {
+    function makeAssetUrl(baseUrl, fileStem, version) {
         if (!fileStem) {
             return null;
         }
-        return baseUrl + encodeURIComponent(fileStem) + '.png';
+        const url = baseUrl + encodeURIComponent(fileStem) + '.png';
+        // Append `?v=<mtime>` when we know the file version so a custom
+        // upload or warmup regeneration busts any in-memory image cache
+        // the client may be holding from a previous URL visit.
+        if (version !== undefined && version !== null && version !== 0) {
+            return url + '?v=' + encodeURIComponent(version);
+        }
+        return url;
     }
 
     function setIfPresent(target, key, value) {
@@ -263,15 +270,15 @@
     function makeCarouselSkin(entry, baseSkin, championId) {
         const splashAssetUrl =
             entry && entry.hasSplashAsset
-                ? makeAssetUrl(TALON_SPLASH_ASSET_BASE_URL, entry.fileStem)
+                ? makeAssetUrl(TALON_SPLASH_ASSET_BASE_URL, entry.fileStem, entry.splashVersion)
                 : null;
         const backgroundAssetUrl =
             entry && entry.hasBackgroundAsset
-                ? makeAssetUrl(TALON_BACKGROUND_ASSET_BASE_URL, entry.fileStem)
+                ? makeAssetUrl(TALON_BACKGROUND_ASSET_BASE_URL, entry.fileStem, entry.backgroundVersion)
                 : null;
         const tileAssetUrl =
             entry && entry.hasTileAsset
-                ? makeAssetUrl(TALON_TILE_ASSET_BASE_URL, entry.fileStem)
+                ? makeAssetUrl(TALON_TILE_ASSET_BASE_URL, entry.fileStem, entry.tileVersion)
                 : null;
         const skin = {
             ...baseSkin,

@@ -19,6 +19,12 @@ pub struct SkinEntry {
     pub preview: Option<String>,
     pub background_preview: Option<String>,
     pub tile_preview: Option<String>,
+    /// True when `tile_preview` points at a user-provided override rather
+    /// than an auto-extracted asset — the UI uses this to surface a reset
+    /// action.
+    pub tile_preview_custom: bool,
+    /// Same, but for the composed background asset.
+    pub background_preview_custom: bool,
     pub champion_icon: Option<String>,
     pub enabled: bool,
 }
@@ -42,7 +48,9 @@ pub fn scan(
     skins_dir: &Path,
     previews_dir: &Path,
     background_previews_dir: &Path,
+    custom_background_previews_dir: &Path,
     tile_previews_dir: &Path,
+    custom_tile_previews_dir: &Path,
     icons_dir: &Path,
     state: &SkinState,
 ) -> Result<Vec<SkinEntry>> {
@@ -84,19 +92,35 @@ pub fn scan(
         let preview = preview::cached_preview_path(&path, previews_dir, &stem)
             .map(|p| p.to_string_lossy().into_owned());
 
-        let background_preview = preview::cached_background_preview_path(
-            &path,
-            background_previews_dir,
-            &stem,
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+        // Custom overrides take precedence over auto-extracted assets.
+        // library.rs only resolves "what should be shown" — the warmup
+        // pipeline still writes auto outputs underneath, so clearing a
+        // custom reveals the auto PNG without having to regenerate it.
+        let custom_background = custom_background_previews_dir.join(format!("{stem}.png"));
+        let (background_preview, background_preview_custom) = if custom_background.is_file() {
+            (Some(custom_background.to_string_lossy().into_owned()), true)
+        } else {
+            (
+                preview::cached_background_preview_path(
+                    &path,
+                    background_previews_dir,
+                    &stem,
+                )
+                .map(|p| p.to_string_lossy().into_owned()),
+                false,
+            )
+        };
 
-        let tile_preview = preview::cached_tile_preview_path(
-            &path,
-            tile_previews_dir,
-            &stem,
-        )
-        .map(|p| p.to_string_lossy().into_owned());
+        let custom_tile = custom_tile_previews_dir.join(format!("{stem}.png"));
+        let (tile_preview, tile_preview_custom) = if custom_tile.is_file() {
+            (Some(custom_tile.to_string_lossy().into_owned()), true)
+        } else {
+            (
+                preview::cached_tile_preview_path(&path, tile_previews_dir, &stem)
+                    .map(|p| p.to_string_lossy().into_owned()),
+                false,
+            )
+        };
 
         let champion_icon = icon_cache
             .entry(champion.clone())
@@ -116,6 +140,8 @@ pub fn scan(
             preview,
             background_preview,
             tile_preview,
+            tile_preview_custom,
+            background_preview_custom,
             champion_icon,
             enabled: state.is_enabled(&stem),
         });

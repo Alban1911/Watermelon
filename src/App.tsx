@@ -4,6 +4,7 @@ import {
   FolderOpen,
   Group,
   Loader2,
+  MoreHorizontal,
   Moon,
   Plus,
   RotateCw,
@@ -28,6 +29,8 @@ type Skin = {
   description: string | null;
   preview: string | null;
   champion_icon: string | null;
+  tile_preview_custom: boolean;
+  background_preview_custom: boolean;
   enabled: boolean;
 };
 
@@ -448,6 +451,7 @@ function App() {
                       skin={skin}
                       onToggle={(enabled) => setEnabled(skin.id, enabled)}
                       onDelete={() => handleDeleteSkin(skin)}
+                      onCustomChanged={load}
                     />
                   ),
                 )}
@@ -569,11 +573,72 @@ function SkinCard({
   skin,
   onToggle,
   onDelete,
+  onCustomChanged,
 }: {
   skin: Skin;
   onToggle: (enabled: boolean) => void;
   onDelete: () => void;
+  onCustomChanged: () => void | Promise<void>;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const menuTriggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      // Clicks on the trigger button itself are handled by its own onClick
+      // (it toggles open/closed) — don't double-handle them here.
+      if (menuTriggerRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [menuOpen]);
+
+  const pickImage = async (): Promise<string | null> => {
+    const selected = await openFileDialog({
+      multiple: false,
+      title: "Choose an image",
+      filters: [
+        { name: "Image", extensions: ["png", "jpg", "jpeg", "webp"] },
+      ],
+    });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] ?? null) : selected;
+  };
+
+  const runCustomAction = async (action: () => Promise<void>) => {
+    setMenuOpen(false);
+    try {
+      await action();
+      await onCustomChanged();
+    } catch (e) {
+      console.error("[Talon] custom asset action failed:", e);
+    }
+  };
+
+  const setCustomTile = () =>
+    runCustomAction(async () => {
+      const source = await pickImage();
+      if (!source) return;
+      await invoke("set_custom_tile", { id: skin.id, source });
+    });
+
+  const setCustomBackground = () =>
+    runCustomAction(async () => {
+      const source = await pickImage();
+      if (!source) return;
+      await invoke("set_custom_background", { id: skin.id, source });
+    });
+
+  const clearCustomTile = () =>
+    runCustomAction(() => invoke("clear_custom_tile", { id: skin.id }));
+  const clearCustomBackground = () =>
+    runCustomAction(() => invoke("clear_custom_background", { id: skin.id }));
+
   return (
     <Card
       className={cn(
@@ -599,6 +664,40 @@ function SkinCard({
         >
           <Trash2 className="size-4" />
         </button>
+        <button
+          ref={menuTriggerRef}
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-label="Customize skin assets"
+          title="Customize skin assets"
+          className="absolute right-2 top-11 cursor-pointer rounded-full bg-background/80 p-1.5 text-foreground opacity-0 backdrop-blur-sm transition-all hover:bg-accent hover:text-accent-foreground focus-visible:opacity-100 group-hover/card:opacity-100"
+        >
+          <MoreHorizontal className="size-4" />
+        </button>
+        {menuOpen && (
+          <div
+            ref={menuRef}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-2 bottom-2 flex flex-col gap-0.5 rounded-lg bg-background/95 p-1 ring-1 ring-border backdrop-blur-sm"
+          >
+            <CustomMenuItem onClick={setCustomTile}>
+              Set tile…
+            </CustomMenuItem>
+            <CustomMenuItem onClick={setCustomBackground}>
+              Set background…
+            </CustomMenuItem>
+            {skin.tile_preview_custom && (
+              <CustomMenuItem onClick={clearCustomTile}>
+                Reset tile
+              </CustomMenuItem>
+            )}
+            {skin.background_preview_custom && (
+              <CustomMenuItem onClick={clearCustomBackground}>
+                Reset background
+              </CustomMenuItem>
+            )}
+          </div>
+        )}
       </div>
       <div className="flex items-center gap-2 p-3">
         <div className="min-w-0 flex-1">
@@ -616,6 +715,24 @@ function SkinCard({
         <Switch checked={skin.enabled} onCheckedChange={onToggle} />
       </div>
     </Card>
+  );
+}
+
+function CustomMenuItem({
+  children,
+  onClick,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="w-full cursor-pointer rounded px-3 py-1.5 text-left text-xs font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+    >
+      {children}
+    </button>
   );
 }
 

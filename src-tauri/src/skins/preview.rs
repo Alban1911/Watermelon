@@ -511,6 +511,42 @@ fn save_rgba_as_tile_png(src: &RgbaImage, dest: &Path) -> Result<()> {
     save_rgba_as_png(&resized, dest)
 }
 
+/// Decodes a user-provided image file's bytes, caps its dimensions at the
+/// standard tile size, and writes it to `dest` as PNG. Used by the
+/// `set_custom_tile` command to store carousel tile overrides.
+pub fn save_custom_tile(source_bytes: &[u8], dest: &Path) -> Result<()> {
+    let rgba = decode_image_to_rgba(source_bytes)?;
+    save_rgba_as_tile_png(&rgba, dest)
+}
+
+/// Decodes a user-provided image file's bytes and cover-resizes it to
+/// exactly `BACKGROUND_WIDTH × BACKGROUND_HEIGHT` (cropping anything that
+/// doesn't fit the 16:9 canvas while preserving the source aspect ratio),
+/// then writes as PNG. Used by the `set_custom_background` command —
+/// deliberately skips the compose pipeline so the user's photo lands on
+/// disk without blur, dim, or vignette.
+pub fn save_custom_background(source_bytes: &[u8], dest: &Path) -> Result<()> {
+    let src = decode_image_to_rgba(source_bytes)?;
+    let (src_w, src_h) = src.dimensions();
+    if src_w == 0 || src_h == 0 {
+        return Err(anyhow!("background source has zero dimension"));
+    }
+
+    let cover_scale = f32::max(
+        BACKGROUND_WIDTH as f32 / src_w as f32,
+        BACKGROUND_HEIGHT as f32 / src_h as f32,
+    );
+    let cover_w = ((src_w as f32) * cover_scale).ceil() as u32;
+    let cover_h = ((src_h as f32) * cover_scale).ceil() as u32;
+    let cover = imageops::resize(&src, cover_w, cover_h, imageops::FilterType::Lanczos3);
+    let crop_x = (cover_w.saturating_sub(BACKGROUND_WIDTH)) / 2;
+    let crop_y = (cover_h.saturating_sub(BACKGROUND_HEIGHT)) / 2;
+    let canvas =
+        imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
+            .to_image();
+    save_rgba_as_png(&canvas, dest)
+}
+
 fn decode_image_to_rgba(bytes: &[u8]) -> Result<RgbaImage> {
     if let Some(texture) = parse_texture(bytes) {
         let surface = texture

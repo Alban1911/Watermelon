@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 use super::library::SkinEntry;
 use super::state::SkinState;
@@ -52,9 +53,30 @@ struct IndexEntry {
     /// Whether Talon has a cached HUD/icon PNG for this skin and can
     /// therefore serve `https://talon/assets/tile/<fileStem>.png`.
     has_tile_asset: bool,
+    /// Unix-epoch mtime (in seconds) of each asset file. Appended as
+    /// `?v=<version>` in preload.js so the CEF browser re-fetches when
+    /// the underlying file changes — e.g. when a user swaps in a custom
+    /// tile or the warmup regenerates the auto asset.
+    splash_version: u64,
+    background_version: u64,
+    tile_version: u64,
     /// File stem of the backing `.fantome`. Reserved for later click
     /// handling that needs to look the real skin file up again.
     file_stem: String,
+}
+
+/// Best-effort mtime lookup — returns seconds since the Unix epoch, or 0
+/// when the file doesn't exist or isn't readable. Used as a cheap cache-
+/// busting version; a non-zero value that changes on every write is all
+/// the preload needs.
+fn file_version(path: Option<&str>) -> u64 {
+    let Some(p) = path else { return 0 };
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Builds `skins_index.json` from the current library + state + champion
@@ -92,6 +114,9 @@ pub fn regenerate(
             has_splash_asset: skin.preview.is_some(),
             has_background_asset: skin.background_preview.is_some(),
             has_tile_asset: skin.tile_preview.is_some(),
+            splash_version: file_version(skin.preview.as_deref()),
+            background_version: file_version(skin.background_preview.as_deref()),
+            tile_version: file_version(skin.tile_preview.as_deref()),
             file_stem: skin.id.clone(),
         });
     }

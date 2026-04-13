@@ -81,6 +81,24 @@ static std::wstring get_tile_previews_dir()
     return std::wstring(appdata) + L"\\com.talon.app\\tile_previews";
 }
 
+static std::wstring get_custom_background_previews_dir()
+{
+    WCHAR appdata[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
+    if (FAILED(hr))
+        return L"";
+    return std::wstring(appdata) + L"\\com.talon.app\\custom_background_previews";
+}
+
+static std::wstring get_custom_tile_previews_dir()
+{
+    WCHAR appdata[MAX_PATH];
+    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
+    if (FAILED(hr))
+        return L"";
+    return std::wstring(appdata) + L"\\com.talon.app\\custom_tile_previews";
+}
+
 static std::u16string wide_to_u16(const std::wstring &ws)
 {
     // On Windows, wchar_t and char16_t are both 16-bit UTF-16 code
@@ -241,20 +259,26 @@ private:
         }
         else if (path.rfind(u"/assets/", 0) == 0)
         {
-            std::wstring assets_dir;
+            // Up to two candidate dirs per route: custom overrides first,
+            // auto-generated assets as fallback. Splash stays auto-only.
+            std::wstring try_dirs[2];
+            size_t num_dirs = 0;
             std::u16string rel;
+
             if (path.rfind(u"/assets/background/", 0) == 0) {
-                assets_dir = get_background_previews_dir();
+                try_dirs[num_dirs++] = get_custom_background_previews_dir();
+                try_dirs[num_dirs++] = get_background_previews_dir();
                 rel = path.substr(19);
             } else if (path.rfind(u"/assets/splash/", 0) == 0) {
-                assets_dir = get_previews_dir();
+                try_dirs[num_dirs++] = get_previews_dir();
                 rel = path.substr(15);
             } else if (path.rfind(u"/assets/tile/", 0) == 0) {
-                assets_dir = get_tile_previews_dir();
+                try_dirs[num_dirs++] = get_custom_tile_previews_dir();
+                try_dirs[num_dirs++] = get_tile_previews_dir();
                 rel = path.substr(13);
             }
 
-            if (!assets_dir.empty() &&
+            if (num_dirs > 0 &&
                 !rel.empty() &&
                 rel.find(u'/') == std::u16string::npos &&
                 rel.find(u'\\') == std::u16string::npos &&
@@ -263,11 +287,16 @@ private:
                 std::wstring decoded_filename;
                 if (url_decode_path_component(rel, &decoded_filename))
                 {
-                    std::wstring full_path = assets_dir + L"\\" + decoded_filename;
-                    if (open_file_stream(full_path, u"image/png"))
+                    for (size_t i = 0; i < num_dirs; ++i)
                     {
-                        *handle_request = 1;
-                        return 1;
+                        if (try_dirs[i].empty())
+                            continue;
+                        std::wstring full_path = try_dirs[i] + L"\\" + decoded_filename;
+                        if (open_file_stream(full_path, u"image/png"))
+                        {
+                            *handle_request = 1;
+                            return 1;
+                        }
                     }
                 }
             }

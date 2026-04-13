@@ -66,7 +66,9 @@ fn regenerate_skin_index(app: &AppHandle) {
         &paths.skins_dir,
         &paths.previews_dir,
         &paths.background_previews_dir,
+        &paths.custom_background_previews_dir,
         &paths.tile_previews_dir,
+        &paths.custom_tile_previews_dir,
         &paths.champion_icons_dir,
         &state,
     ) {
@@ -211,7 +213,9 @@ struct AppPaths {
     state_path: PathBuf,
     previews_dir: PathBuf,
     background_previews_dir: PathBuf,
+    custom_background_previews_dir: PathBuf,
     tile_previews_dir: PathBuf,
+    custom_tile_previews_dir: PathBuf,
     champion_icons_dir: PathBuf,
 }
 
@@ -222,7 +226,9 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
         state_path: data_dir.join("state.json"),
         previews_dir: data_dir.join("previews"),
         background_previews_dir: data_dir.join("background_previews"),
+        custom_background_previews_dir: data_dir.join("custom_background_previews"),
         tile_previews_dir: data_dir.join("tile_previews"),
+        custom_tile_previews_dir: data_dir.join("custom_tile_previews"),
         champion_icons_dir: data_dir.join("champion_icons"),
     })
 }
@@ -339,7 +345,9 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
         &paths.skins_dir,
         &paths.previews_dir,
         &paths.background_previews_dir,
+        &paths.custom_background_previews_dir,
         &paths.tile_previews_dir,
+        &paths.custom_tile_previews_dir,
         &paths.champion_icons_dir,
         &state,
     )
@@ -386,22 +394,18 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
             .map_err(|e| format!("removing .fantome: {e}"))?;
     }
 
-    let preview_path = paths.previews_dir.join(format!("{id}.png"));
-    if preview_path.exists() {
-        // Preview is just a cache — if the remove fails, don't fail the
-        // whole delete (the .fantome is already gone, the scan will no
-        // longer reference this id).
-        let _ = std::fs::remove_file(&preview_path);
-    }
-
-    let background_preview_path = paths.background_previews_dir.join(format!("{id}.png"));
-    if background_preview_path.exists() {
-        let _ = std::fs::remove_file(&background_preview_path);
-    }
-
-    let tile_preview_path = paths.tile_previews_dir.join(format!("{id}.png"));
-    if tile_preview_path.exists() {
-        let _ = std::fs::remove_file(&tile_preview_path);
+    // Cached / derived files — the .fantome is already gone so we don't
+    // care if any of these fail; the scan will no longer reference this id.
+    for cached in [
+        paths.previews_dir.join(format!("{id}.png")),
+        paths.background_previews_dir.join(format!("{id}.png")),
+        paths.custom_background_previews_dir.join(format!("{id}.png")),
+        paths.tile_previews_dir.join(format!("{id}.png")),
+        paths.custom_tile_previews_dir.join(format!("{id}.png")),
+    ] {
+        if cached.exists() {
+            let _ = std::fs::remove_file(&cached);
+        }
     }
 
     let mut state =
@@ -538,6 +542,91 @@ async fn import_skin_bytes(
 }
 
 #[tauri::command]
+async fn set_custom_tile(app: AppHandle, id: String, source: String) -> Result<(), String> {
+    set_custom_asset(app, id, source, CustomAssetKind::Tile).await
+}
+
+#[tauri::command]
+async fn set_custom_background(app: AppHandle, id: String, source: String) -> Result<(), String> {
+    set_custom_asset(app, id, source, CustomAssetKind::Background).await
+}
+
+#[tauri::command]
+fn clear_custom_tile(app: AppHandle, id: String) -> Result<(), String> {
+    clear_custom_asset(&app, &id, CustomAssetKind::Tile)
+}
+
+#[tauri::command]
+fn clear_custom_background(app: AppHandle, id: String) -> Result<(), String> {
+    clear_custom_asset(&app, &id, CustomAssetKind::Background)
+}
+
+#[derive(Copy, Clone)]
+enum CustomAssetKind {
+    Tile,
+    Background,
+}
+
+fn custom_asset_dest(paths: &AppPaths, kind: CustomAssetKind, id: &str) -> PathBuf {
+    let dir = match kind {
+        CustomAssetKind::Tile => &paths.custom_tile_previews_dir,
+        CustomAssetKind::Background => &paths.custom_background_previews_dir,
+    };
+    dir.join(format!("{id}.png"))
+}
+
+async fn set_custom_asset(
+    app: AppHandle,
+    id: String,
+    source: String,
+    kind: CustomAssetKind,
+) -> Result<(), String> {
+    let task_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let paths = resolve_paths(&task_app)?;
+        let parent = match kind {
+            CustomAssetKind::Tile => &paths.custom_tile_previews_dir,
+            CustomAssetKind::Background => &paths.custom_background_previews_dir,
+        };
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+
+        let source_bytes = std::fs::read(&source)
+            .map_err(|e| format!("reading {source}: {e}"))?;
+        let dest = custom_asset_dest(&paths, kind, &id);
+        match kind {
+            CustomAssetKind::Tile => skins::preview::save_custom_tile(&source_bytes, &dest)
+                .map_err(|e| e.to_string())?,
+            CustomAssetKind::Background => {
+                skins::preview::save_custom_background(&source_bytes, &dest)
+                    .map_err(|e| e.to_string())?
+            }
+        }
+
+        regenerate_skin_index(&task_app);
+        spawn_champ_select_refresh();
+        let _ = task_app.emit("library:assets-updated", ());
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn clear_custom_asset(app: &AppHandle, id: &str, kind: CustomAssetKind) -> Result<(), String> {
+    let paths = resolve_paths(app)?;
+    let dest = custom_asset_dest(&paths, kind, id);
+    if dest.exists() {
+        std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+    }
+    regenerate_skin_index(app);
+    spawn_champ_select_refresh();
+    // Revealing the auto asset — if warmup never ran for this skin,
+    // kick it so the fallback file actually lands on disk.
+    spawn_asset_warmup(app.clone());
+    let _ = app.emit("library:assets-updated", ());
+    Ok(())
+}
+
+#[tauri::command]
 fn activate_pengu(app: AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
@@ -573,6 +662,10 @@ pub fn run() {
             import_skin,
             import_skin_bytes,
             delete_skin,
+            set_custom_tile,
+            set_custom_background,
+            clear_custom_tile,
+            clear_custom_background,
             activate_pengu,
             deactivate_pengu,
             pengu_status
