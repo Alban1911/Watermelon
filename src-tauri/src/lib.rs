@@ -1,6 +1,7 @@
 mod bridge;
 mod data_dragon;
 mod lcu;
+mod overlay;
 mod pengu;
 mod skins;
 mod wad;
@@ -8,7 +9,7 @@ mod wad;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
 
@@ -25,6 +26,14 @@ static CORE_DLL_PATH: OnceLock<PathBuf> = OnceLock::new();
 /// metadata (which uses string aliases) to the numeric championIds the
 /// LCU carousel speaks in.
 static CHAMPION_MAP: OnceLock<HashMap<String, i64>> = OnceLock::new();
+/// Kept alive for the process lifetime so the spawned worker thread
+/// and any retained Arc clones inside the bridge task never race on
+/// a drop. Also gives the shutdown hooks a handle for clearing the
+/// overlay directory so next cold-start doesn't reload stale WADs.
+static HOVER_RUNTIME: OnceLock<Arc<overlay::HoverRuntime>> = OnceLock::new();
+/// Resolved overlay directory. Separate from `HOVER_RUNTIME` so cleanup
+/// works even if runtime construction failed.
+static OVERLAY_DIR: OnceLock<PathBuf> = OnceLock::new();
 static ASSET_WARMING: AtomicBool = AtomicBool::new(false);
 
 /// Idempotent shutdown cleanup. Deactivates pengu (deletes IFEO key if it's
@@ -38,6 +47,12 @@ fn cleanup_on_exit() {
         match pengu::deactivate(core_dll, flag) {
             Ok(()) => eprintln!("[Pengu] cleaned up on exit"),
             Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+        }
+    }
+    if let Some(overlay_dir) = OVERLAY_DIR.get() {
+        match overlay::runtime::clear_overlay_dir(overlay_dir) {
+            Ok(()) => eprintln!("[Overlay] cleared on exit"),
+            Err(e) => eprintln!("[Overlay] cleanup on exit failed: {}", e),
         }
     }
     kill_dev_server_port();
@@ -212,6 +227,8 @@ use skins::state::SkinState;
 struct AppPaths {
     skins_dir: PathBuf,
     state_path: PathBuf,
+    skins_index_path: PathBuf,
+    overlay_dir: PathBuf,
     previews_dir: PathBuf,
     background_previews_dir: PathBuf,
     custom_background_previews_dir: PathBuf,
@@ -225,6 +242,8 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
     Ok(AppPaths {
         skins_dir: data_dir.join("skins"),
         state_path: data_dir.join("state.json"),
+        skins_index_path: data_dir.join("skins_index.json"),
+        overlay_dir: data_dir.join("overlay"),
         previews_dir: data_dir.join("previews"),
         background_previews_dir: data_dir.join("background_previews"),
         custom_background_previews_dir: data_dir.join("custom_background_previews"),
@@ -738,10 +757,44 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     lcu::run(handle).await;
                 });
-                let bridge_handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    bridge::run(bridge_handle).await;
-                });
+
+                // Construct the hover runtime before the bridge so the
+                // bridge has a live Arc to forward hover events into on
+                // its very first client frame. If app-path resolution
+                // fails (effectively impossible on Windows), log and
+                // skip both the runtime and the bridge — the rest of
+                // the app keeps working, hover injection is simply off
+                // for this session.
+                match resolve_paths(&app.handle()) {
+                    Ok(paths) => {
+                        if let Err(e) = std::fs::create_dir_all(&paths.overlay_dir) {
+                            eprintln!(
+                                "[Overlay] create {} failed: {}",
+                                paths.overlay_dir.display(),
+                                e
+                            );
+                        }
+                        let _ = OVERLAY_DIR.set(paths.overlay_dir.clone());
+                        let runtime = Arc::new(overlay::HoverRuntime::start(
+                            app.handle().clone(),
+                            paths.skins_dir,
+                            paths.skins_index_path,
+                            paths.overlay_dir,
+                        ));
+                        let _ = HOVER_RUNTIME.set(runtime.clone());
+
+                        let bridge_handle = app.handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            bridge::run(bridge_handle, runtime).await;
+                        });
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "[Overlay] could not resolve app paths, hover injection disabled: {}",
+                            e
+                        );
+                    }
+                }
             }
             spawn_asset_warmup(app.handle().clone());
             Ok(())
