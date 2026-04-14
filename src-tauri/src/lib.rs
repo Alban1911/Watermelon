@@ -652,6 +652,8 @@ fn pengu_status(app: AppHandle) -> Result<bool, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let no_inject = std::env::args().any(|a| a == "--no-inject");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -670,7 +672,7 @@ pub fn run() {
             deactivate_pengu,
             pengu_status
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let setup_handle = app.handle().clone();
             if let Ok(paths) = resolve_paths(&setup_handle) {
                 if let Err(e) = migrate_existing_skin_filenames(&paths) {
@@ -678,31 +680,35 @@ pub fn run() {
                 }
             }
 
-            if let (Ok(data_dir), Ok(resource_dir)) =
-                (app.path().app_data_dir(), app.path().resource_dir())
-            {
-                let flag = pengu::flag_path(&data_dir);
-                let core_dll = pengu::resolve_core_dll_path(&resource_dir);
-                let _ = FLAG_PATH.set(flag.clone());
-                let _ = CORE_DLL_PATH.set(core_dll.clone());
+            if !no_inject {
+                if let (Ok(data_dir), Ok(resource_dir)) =
+                    (app.path().app_data_dir(), app.path().resource_dir())
+                {
+                    let flag = pengu::flag_path(&data_dir);
+                    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+                    let _ = FLAG_PATH.set(flag.clone());
+                    let _ = CORE_DLL_PATH.set(core_dll.clone());
 
-                pengu::cleanup_if_dirty(&core_dll, &flag);
+                    pengu::cleanup_if_dirty(&core_dll, &flag);
 
-                match pengu::activate(&core_dll, &flag) {
-                    Ok(()) => eprintln!("[Pengu] auto-activated on startup"),
-                    Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
+                    match pengu::activate(&core_dll, &flag) {
+                        Ok(()) => eprintln!("[Pengu] auto-activated on startup"),
+                        Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
+                    }
+
+                    // Console-side Ctrl+C: installs a Win32 console handler so
+                    // the dev terminal's Ctrl+C runs cleanup before exit.
+                    // (Window-close path is handled by RunEvent::ExitRequested
+                    // in the run callback below.)
+                    if let Err(e) = ctrlc::set_handler(|| {
+                        cleanup_on_exit();
+                        std::process::exit(0);
+                    }) {
+                        eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
+                    }
                 }
-
-                // Console-side Ctrl+C: installs a Win32 console handler so
-                // the dev terminal's Ctrl+C runs cleanup before exit.
-                // (Window-close path is handled by RunEvent::ExitRequested
-                // in the run callback below.)
-                if let Err(e) = ctrlc::set_handler(|| {
-                    cleanup_on_exit();
-                    std::process::exit(0);
-                }) {
-                    eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
-                }
+            } else {
+                eprintln!("[Pengu] --no-inject: skipping activation and LCU poller");
             }
             // One-shot Data Dragon fetch for the champion alias→id map,
             // then generate the initial skin index. Runs async so startup
@@ -726,10 +732,12 @@ pub fn run() {
                 });
             }
 
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                lcu::run(handle).await;
-            });
+            if !no_inject {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    lcu::run(handle).await;
+                });
+            }
             spawn_asset_warmup(app.handle().clone());
             Ok(())
         })

@@ -13,14 +13,8 @@ use crate::wad::{bin, CompressionType, WadReader};
 const DDS_MAGIC: [u8; 4] = *b"DDS ";
 const TEX_MAGIC: [u8; 4] = *b"TEX\0";
 const DDRAGON_TIMEOUT: Duration = Duration::from_secs(5);
-const BACKGROUND_WIDTH: u32 = 1920;
-const BACKGROUND_HEIGHT: u32 = 1080;
-// Blur on a downsampled canvas — sigma scales 1:1 with the downsample
-// factor (18 * 270/1080 = 4.5), which is mathematically close to running
-// sigma=18 on the full canvas but ~16× less work.
-const BLUR_DOWNSAMPLE_W: u32 = 480;
-const BLUR_DOWNSAMPLE_H: u32 = 270;
-const BLUR_SIGMA_SMALL: f32 = 4.5;
+const BACKGROUND_WIDTH: u32 = 1280;
+const BACKGROUND_HEIGHT: u32 = 720;
 // Max edge length for carousel tiles — anything bigger gets Lanczos-scaled
 // down before encoding. Splash textures are typically 2048² which would
 // bloat the tile cache for zero visible gain.
@@ -413,67 +407,61 @@ fn parse_texture(bytes: &[u8]) -> Option<Texture> {
     }
 }
 
+// Vignette strength: 0.0 = no darkening at edges, 1.0 = pure black at edges.
+// 0.72 matches the visual weight of the native `skin-splash-darken.png` layer
+// (1280×720 RGBA radial gradient at 55% opacity) when viewed outside the client.
+const VIGNETTE_STRENGTH: f32 = 0.72;
+
+/// Fit-resizes an RGBA source into `BACKGROUND_WIDTH × BACKGROUND_HEIGHT`,
+/// letterboxing/pillarboxing with black if the aspect ratio differs, then
+/// applies a radial vignette matching League's own `skin-splash-darken.png`.
 fn compose_background_png(src: &RgbaImage, dest: &Path) -> Result<()> {
     let (src_w, src_h) = src.dimensions();
     if src_w == 0 || src_h == 0 {
         return Err(anyhow!("background source has zero dimension"));
     }
 
-    // Cover-fill: scale the source so it at least covers the canvas, then
-    // center-crop to exact canvas size. Triangle is fine here — the result
-    // gets heavily blurred next, so any high-frequency loss is invisible.
-    let cover_scale = f32::max(
+    // Fit (contain): scale so the entire source fits inside the canvas.
+    let fit_scale = f32::min(
         BACKGROUND_WIDTH as f32 / src_w as f32,
         BACKGROUND_HEIGHT as f32 / src_h as f32,
     );
-    let cover_w = ((src_w as f32) * cover_scale).ceil() as u32;
-    let cover_h = ((src_h as f32) * cover_scale).ceil() as u32;
-    let cover = imageops::resize(src, cover_w, cover_h, imageops::FilterType::Triangle);
-    let crop_x = (cover_w.saturating_sub(BACKGROUND_WIDTH)) / 2;
-    let crop_y = (cover_h.saturating_sub(BACKGROUND_HEIGHT)) / 2;
-    let cover_cropped =
-        imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
-            .to_image();
+    let fit_w = ((src_w as f32) * fit_scale).round() as u32;
+    let fit_h = ((src_h as f32) * fit_scale).round() as u32;
+    let resized = imageops::resize(src, fit_w, fit_h, imageops::FilterType::Lanczos3);
 
-    // Blur at 480×270 then upscale back — the upscale itself adds linear
-    // smoothing, which is what we want anyway, and the blur runs on ~16×
-    // fewer pixels than it would at full canvas size.
-    let small = imageops::resize(
-        &cover_cropped,
-        BLUR_DOWNSAMPLE_W,
-        BLUR_DOWNSAMPLE_H,
-        imageops::FilterType::Triangle,
-    );
-    let blurred_small = imageops::blur(&small, BLUR_SIGMA_SMALL);
-    let mut canvas = imageops::resize(
-        &blurred_small,
-        BACKGROUND_WIDTH,
-        BACKGROUND_HEIGHT,
-        imageops::FilterType::Triangle,
-    );
-
-    // Dim the blurred fill a bit so the centered art remains the focal point.
-    for pixel in canvas.pixels_mut() {
-        pixel[0] = ((pixel[0] as f32) * 0.55) as u8;
-        pixel[1] = ((pixel[1] as f32) * 0.55) as u8;
-        pixel[2] = ((pixel[2] as f32) * 0.55) as u8;
-    }
-
-    let contain_scale = f32::min(
-        (BACKGROUND_WIDTH as f32 * 0.88) / src_w as f32,
-        (BACKGROUND_HEIGHT as f32 * 0.9) / src_h as f32,
-    );
-    let fg_w = ((src_w as f32) * contain_scale).round().max(1.0) as u32;
-    let fg_h = ((src_h as f32) * contain_scale).round().max(1.0) as u32;
-    let foreground = imageops::resize(src, fg_w, fg_h, imageops::FilterType::Lanczos3);
-
-    // Lift the art a bit so faces land closer to the carousel focus ring.
-    let offset_x = ((BACKGROUND_WIDTH - fg_w) / 2) as i64;
-    let offset_y = (((BACKGROUND_HEIGHT - fg_h) as f32) * 0.42).round() as i64;
-    imageops::overlay(&mut canvas, &foreground, offset_x, offset_y);
+    // Compose onto a black canvas, centered.
+    let mut canvas = RgbaImage::from_pixel(BACKGROUND_WIDTH, BACKGROUND_HEIGHT, image::Rgba([0, 0, 0, 255]));
+    let offset_x = (BACKGROUND_WIDTH.saturating_sub(fit_w)) / 2;
+    let offset_y = (BACKGROUND_HEIGHT.saturating_sub(fit_h)) / 2;
+    imageops::overlay(&mut canvas, &resized, offset_x as i64, offset_y as i64);
 
     apply_vignette(&mut canvas);
     save_rgba_as_png(&canvas, dest)
+}
+
+/// Burns a radial vignette into `img` in-place. Each pixel is darkened by
+/// `VIGNETTE_STRENGTH * t` where `t` is the normalised distance from centre
+/// (0.0 at centre → 1.0 at corner), giving the same dark-edge / bright-centre
+/// look as the League client's darken overlay.
+fn apply_vignette(img: &mut RgbaImage) {
+    let (w, h) = img.dimensions();
+    let cx = w as f32 / 2.0;
+    let cy = h as f32 / 2.0;
+    // Max possible distance from centre to corner, used to normalise t → [0,1].
+    let max_dist = (cx * cx + cy * cy).sqrt();
+
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        let dx = x as f32 - cx;
+        let dy = y as f32 - cy;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let t = (dist / max_dist).min(1.0);
+        let darken = 1.0 - VIGNETTE_STRENGTH * t;
+        px[0] = (px[0] as f32 * darken) as u8;
+        px[1] = (px[1] as f32 * darken) as u8;
+        px[2] = (px[2] as f32 * darken) as u8;
+        // alpha untouched
+    }
 }
 
 /// Writes an `RgbaImage` as PNG using the fast-compression encoder path.
@@ -519,32 +507,13 @@ pub fn save_custom_tile(source_bytes: &[u8], dest: &Path) -> Result<()> {
     save_rgba_as_tile_png(&rgba, dest)
 }
 
-/// Decodes a user-provided image file's bytes and cover-resizes it to
-/// exactly `BACKGROUND_WIDTH × BACKGROUND_HEIGHT` (cropping anything that
-/// doesn't fit the 16:9 canvas while preserving the source aspect ratio),
-/// then writes as PNG. Used by the `set_custom_background` command —
-/// deliberately skips the compose pipeline so the user's photo lands on
-/// disk without blur, dim, or vignette.
+/// Decodes a user-provided image file's bytes and writes it as the custom
+/// background PNG. Shares the cover-resize path with auto-generated
+/// backgrounds so both land on disk as raw 1920×1080 art — the native
+/// client applies its own darken/vignette chrome on top.
 pub fn save_custom_background(source_bytes: &[u8], dest: &Path) -> Result<()> {
     let src = decode_image_to_rgba(source_bytes)?;
-    let (src_w, src_h) = src.dimensions();
-    if src_w == 0 || src_h == 0 {
-        return Err(anyhow!("background source has zero dimension"));
-    }
-
-    let cover_scale = f32::max(
-        BACKGROUND_WIDTH as f32 / src_w as f32,
-        BACKGROUND_HEIGHT as f32 / src_h as f32,
-    );
-    let cover_w = ((src_w as f32) * cover_scale).ceil() as u32;
-    let cover_h = ((src_h as f32) * cover_scale).ceil() as u32;
-    let cover = imageops::resize(&src, cover_w, cover_h, imageops::FilterType::Lanczos3);
-    let crop_x = (cover_w.saturating_sub(BACKGROUND_WIDTH)) / 2;
-    let crop_y = (cover_h.saturating_sub(BACKGROUND_HEIGHT)) / 2;
-    let canvas =
-        imageops::crop_imm(&cover, crop_x, crop_y, BACKGROUND_WIDTH, BACKGROUND_HEIGHT)
-            .to_image();
-    save_rgba_as_png(&canvas, dest)
+    compose_background_png(&src, dest)
 }
 
 fn decode_image_to_rgba(bytes: &[u8]) -> Result<RgbaImage> {
@@ -559,22 +528,6 @@ fn decode_image_to_rgba(bytes: &[u8]) -> Result<RgbaImage> {
 
     let img = image::load_from_memory(bytes).context("decoding image source")?;
     Ok(img.into_rgba8())
-}
-
-fn apply_vignette(canvas: &mut RgbaImage) {
-    let cx = BACKGROUND_WIDTH as f32 / 2.0;
-    let cy = BACKGROUND_HEIGHT as f32 / 2.0;
-    let max_dist = (cx * cx + cy * cy).sqrt();
-
-    for (x, y, pixel) in canvas.enumerate_pixels_mut() {
-        let dx = x as f32 - cx;
-        let dy = y as f32 - cy;
-        let dist = (dx * dx + dy * dy).sqrt() / max_dist;
-        let shade = 1.0 - (dist * dist * 0.28);
-        pixel[0] = ((pixel[0] as f32) * shade) as u8;
-        pixel[1] = ((pixel[1] as f32) * shade) as u8;
-        pixel[2] = ((pixel[2] as f32) * shade) as u8;
-    }
 }
 
 /// Returns the path to a cached square champion icon (380×380 face tile),
