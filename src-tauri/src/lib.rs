@@ -1,3 +1,4 @@
+mod bridge;
 mod data_dragon;
 mod lcu;
 mod pengu;
@@ -736,6 +737,10 @@ pub fn run() {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     lcu::run(handle).await;
+                });
+                let bridge_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    bridge::run(bridge_handle).await;
                 });
             }
             spawn_asset_warmup(app.handle().clone());

@@ -42,7 +42,11 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
             .context("connecting WebSocket")?;
     eprintln!("[LCU] WebSocket connected");
 
-    // WAMP v1 SUBSCRIBE: [5, "topic"]
+    // WAMP v1 SUBSCRIBE: [5, "topic"]. OnJsonApiEvent_<uri> is the LCU's
+    // filtered firehose — we only receive Create/Update/Delete events for
+    // the exact URI we asked for. The carousel "currently hovered skin"
+    // is not tracked here (see the bridge module for that); we only need
+    // phase changes and champ-select session for champion detection.
     ws.send(Message::Text(
         r#"[5,"OnJsonApiEvent_lol-gameflow_v1_gameflow-phase"]"#.into(),
     ))
