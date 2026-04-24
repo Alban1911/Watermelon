@@ -2,6 +2,7 @@ mod bridge;
 mod data_dragon;
 mod lcu;
 mod overlay;
+mod patcher;
 mod pengu;
 mod skins;
 mod wad;
@@ -9,7 +10,8 @@ mod wad;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
 
@@ -34,7 +36,71 @@ static HOVER_RUNTIME: OnceLock<Arc<overlay::HoverRuntime>> = OnceLock::new();
 /// Resolved overlay directory. Separate from `HOVER_RUNTIME` so cleanup
 /// works even if runtime construction failed.
 static OVERLAY_DIR: OnceLock<PathBuf> = OnceLock::new();
+static LEAGUE_INSTALL_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static ASSET_WARMING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AppConfig {
+    league_install_dir: Option<String>,
+}
+
+fn league_install_dir_cell() -> &'static Mutex<Option<PathBuf>> {
+    LEAGUE_INSTALL_DIR.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
+    league_install_dir_cell()
+        .lock()
+        .expect("league install dir lock poisoned")
+        .clone()
+}
+
+fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(data_dir.join("config.json"))
+}
+
+fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
+    let path = app_config_path(app)?;
+    if !path.exists() {
+        return Ok(AppConfig::default());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("reading {}: {e}", path.display()))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("parsing {}: {e}", path.display()))
+}
+
+fn save_app_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
+    let path = app_config_path(app)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = serde_json::to_vec_pretty(config).map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
+fn normalize_league_install_dir(path: &std::path::Path) -> Result<PathBuf, String> {
+    let candidate = if path.join("Game").join("DATA").join("FINAL").is_dir() {
+        path.to_path_buf()
+    } else if path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case("Game"))
+        && path.join("DATA").join("FINAL").is_dir()
+    {
+        path.parent()
+            .ok_or_else(|| format!("{} has no parent install dir", path.display()))?
+            .to_path_buf()
+    } else {
+        return Err(format!(
+            "{} does not look like a League install (missing Game/DATA/FINAL)",
+            path.display()
+        ));
+    };
+    candidate.canonicalize().map_err(|e| format!("canonicalizing {}: {e}", candidate.display()))
+}
+
+fn set_saved_league_install_dir(path: Option<PathBuf>) {
+    *league_install_dir_cell()
+        .lock()
+        .expect("league install dir lock poisoned") = path;
+}
 
 /// Idempotent shutdown cleanup. Deactivates pengu (deletes IFEO key if it's
 /// still ours, removes the flag file, kills `LeagueClientUx.exe` so the
@@ -49,13 +115,83 @@ fn cleanup_on_exit() {
             Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
         }
     }
+    cleanup_overlay_session("exit");
+    patcher::unload();
+    kill_dev_server_port();
+}
+
+fn install_ctrlc_handler_for_mode() {
+    let install = if cfg!(debug_assertions) {
+        ctrlc::set_handler(|| {
+            cleanup_overlay_session("dev Ctrl+C");
+            patcher::unload();
+            spawn_detached_dev_cleanup();
+            std::process::exit(0);
+        })
+    } else {
+        ctrlc::set_handler(|| {
+            cleanup_on_exit();
+            std::process::exit(0);
+        })
+    };
+
+    if let Err(e) = install {
+        eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
+    }
+}
+
+#[cfg(windows)]
+fn spawn_detached_dev_cleanup() {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let core_dll = CORE_DLL_PATH
+        .get()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let flag = FLAG_PATH
+        .get()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let script = format!(
+        "$core = {core}; \
+         $flag = {flag}; \
+         $subkey = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\LeagueClientUx.exe'; \
+         try {{ \
+             $debugger = (Get-ItemProperty -Path $subkey -Name Debugger -ErrorAction SilentlyContinue).Debugger; \
+             if ($debugger -and $debugger.ToLower().Contains($core.ToLower())) {{ \
+                 Remove-Item -Path $subkey -Recurse -Force -ErrorAction SilentlyContinue; \
+             }} \
+         }} catch {{}}; \
+         try {{ if ($flag) {{ Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue; }} }} catch {{}}; \
+         try {{ Get-Process LeagueClientUx -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; }} catch {{}}",
+        core = ps_single_quoted(&core_dll),
+        flag = ps_single_quoted(&flag),
+    );
+
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+}
+
+#[cfg(not(windows))]
+fn spawn_detached_dev_cleanup() {}
+
+fn ps_single_quoted(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+pub(crate) fn cleanup_overlay_session(reason: &str) {
+    patcher::stop();
     if let Some(overlay_dir) = OVERLAY_DIR.get() {
         match overlay::runtime::clear_overlay_dir(overlay_dir) {
-            Ok(()) => eprintln!("[Overlay] cleared on exit"),
-            Err(e) => eprintln!("[Overlay] cleanup on exit failed: {}", e),
+            Ok(()) => eprintln!("[Overlay] cleared on {}", reason),
+            Err(e) => eprintln!("[Overlay] cleanup on {} failed: {}", reason, e),
         }
     }
-    kill_dev_server_port();
 }
 
 /// Rebuilds `<app_data_dir>/skins_index.json` from the current library
@@ -647,6 +783,39 @@ fn clear_custom_asset(app: &AppHandle, id: &str, kind: CustomAssetKind) -> Resul
 }
 
 #[tauri::command]
+fn get_league_install_path(app: AppHandle) -> Result<Option<String>, String> {
+    let config = load_app_config(&app)?;
+    Ok(config.league_install_dir)
+}
+
+#[tauri::command]
+fn set_league_install_path(app: AppHandle, path: String) -> Result<String, String> {
+    let normalized = normalize_league_install_dir(std::path::Path::new(&path))?;
+    let mut config = load_app_config(&app)?;
+    config.league_install_dir = Some(normalized.to_string_lossy().into_owned());
+    save_app_config(&app, &config)?;
+    set_saved_league_install_dir(Some(normalized.clone()));
+    Ok(normalized.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn detect_league_install_path(app: AppHandle) -> Result<Option<String>, String> {
+    let detected = match crate::lcu::process::find_install_directory() {
+        Ok(path) => path,
+        Err(_) => return Ok(None),
+    };
+    let normalized = normalize_league_install_dir(&detected)?;
+    let normalized_str = normalized.to_string_lossy().into_owned();
+    let mut config = load_app_config(&app)?;
+    if config.league_install_dir.as_deref() != Some(normalized_str.as_str()) {
+        config.league_install_dir = Some(normalized_str.clone());
+        save_app_config(&app, &config)?;
+    }
+    set_saved_league_install_dir(Some(normalized));
+    Ok(Some(normalized_str))
+}
+
+#[tauri::command]
 fn activate_pengu(app: AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
@@ -688,6 +857,9 @@ pub fn run() {
             set_custom_background,
             clear_custom_tile,
             clear_custom_background,
+            get_league_install_path,
+            set_league_install_path,
+            detect_league_install_path,
             activate_pengu,
             deactivate_pengu,
             pengu_status
@@ -699,6 +871,13 @@ pub fn run() {
                     eprintln!("[Migration] filename normalize failed: {}", e);
                 }
             }
+            if let Ok(config) = load_app_config(&setup_handle) {
+                let saved = config
+                    .league_install_dir
+                    .as_deref()
+                    .and_then(|p| normalize_league_install_dir(std::path::Path::new(p)).ok());
+                set_saved_league_install_dir(saved);
+            }
 
             if !no_inject {
                 if let (Ok(data_dir), Ok(resource_dir)) =
@@ -709,6 +888,11 @@ pub fn run() {
                     let _ = FLAG_PATH.set(flag.clone());
                     let _ = CORE_DLL_PATH.set(core_dll.clone());
 
+                    let cslol_dll = patcher::resolve_dll_path(&resource_dir);
+                    if let Err(e) = patcher::load(&cslol_dll) {
+                        eprintln!("[Patcher] load failed: {}", e);
+                    }
+
                     pengu::cleanup_if_dirty(&core_dll, &flag);
 
                     match pengu::activate(&core_dll, &flag) {
@@ -716,16 +900,7 @@ pub fn run() {
                         Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
                     }
 
-                    // Console-side Ctrl+C: installs a Win32 console handler so
-                    // the dev terminal's Ctrl+C runs cleanup before exit.
-                    // (Window-close path is handled by RunEvent::ExitRequested
-                    // in the run callback below.)
-                    if let Err(e) = ctrlc::set_handler(|| {
-                        cleanup_on_exit();
-                        std::process::exit(0);
-                    }) {
-                        eprintln!("[Pengu] could not install Ctrl+C handler: {}", e);
-                    }
+                    install_ctrlc_handler_for_mode();
                 }
             } else {
                 eprintln!("[Pengu] --no-inject: skipping activation and LCU poller");
@@ -774,6 +949,19 @@ pub fn run() {
                                 e
                             );
                         }
+                        if let Err(e) = overlay::runtime::clear_overlay_dir(&paths.overlay_dir) {
+                            eprintln!(
+                                "[Overlay] startup cleanup {} failed: {}",
+                                paths.overlay_dir.display(),
+                                e
+                            );
+                        }
+                        let overlay_dir = paths.overlay_dir.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            if let Err(e) = overlay::runtime::validate_map_cache_startup(&overlay_dir) {
+                                eprintln!("[Overlay] startup map-cache validation skipped: {}", e);
+                            }
+                        });
                         let _ = OVERLAY_DIR.set(paths.overlay_dir.clone());
                         let runtime = Arc::new(overlay::HoverRuntime::start(
                             app.handle().clone(),

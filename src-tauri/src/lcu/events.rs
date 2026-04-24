@@ -84,6 +84,12 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
                 if last_phase.as_deref() != Some(phase) {
                     eprintln!("[Phase] {}", phase);
                     let _ = app.emit("lcu:phase-changed", phase);
+                    if should_cleanup_for_phase(last_phase.as_deref(), phase) {
+                        let reason = format!("gameflow phase {}", phase);
+                        tauri::async_runtime::spawn_blocking(move || {
+                            crate::cleanup_overlay_session(&reason);
+                        });
+                    }
                     last_phase = Some(phase.to_string());
                 }
             }
@@ -106,6 +112,18 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
     }
 
     Err(anyhow!("WebSocket stream ended"))
+}
+
+fn should_cleanup_for_phase(previous: Option<&str>, phase: &str) -> bool {
+    matches!(phase, "EndOfGame" | "None")
+        || (phase == "Lobby" && previous.is_some_and(is_post_game_phase))
+}
+
+fn is_post_game_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "InProgress" | "WaitingForStats" | "PreEndOfGame" | "EndOfGame"
+    )
 }
 
 async fn fetch_alias_map(client: &LcuClient) -> Result<HashMap<i64, String>> {

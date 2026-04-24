@@ -39,6 +39,12 @@ type SkinLibrary = {
   skins: Skin[];
 };
 
+type LeaguePathState = {
+  path: string | null;
+  isResolving: boolean;
+  error: string | null;
+};
+
 const GROUP_STORAGE_KEY = "talon:groupByChampion";
 const THEME_STORAGE_KEY = "talon:theme";
 
@@ -76,6 +82,11 @@ if (readInitialTheme()) {
 function App() {
   const [library, setLibrary] = useState<SkinLibrary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [leaguePath, setLeaguePath] = useState<LeaguePathState>({
+    path: null,
+    isResolving: true,
+    error: null,
+  });
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Skin | null>(null);
@@ -175,6 +186,71 @@ function App() {
   useEffect(() => {
     load();
   }, [load]);
+
+  const refreshLeaguePath = useCallback(async () => {
+    setLeaguePath((cur) => ({ ...cur, isResolving: true, error: null }));
+    try {
+      const saved = await invoke<string | null>("get_league_install_path");
+      if (saved) {
+        setLeaguePath({ path: saved, isResolving: false, error: null });
+        return;
+      }
+      const detected = await invoke<string | null>("detect_league_install_path");
+      setLeaguePath({ path: detected, isResolving: false, error: null });
+    } catch (e) {
+      setLeaguePath({
+        path: null,
+        isResolving: false,
+        error: String(e),
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshLeaguePath();
+  }, [refreshLeaguePath]);
+
+  const handlePickLeagueFolder = async () => {
+    try {
+      const selected = await openFileDialog({
+        directory: true,
+        multiple: false,
+        title: "Select your League of Legends install folder",
+      });
+      if (!selected) return;
+      const chosen = Array.isArray(selected) ? selected[0] : selected;
+      if (!chosen) return;
+      setLeaguePath((cur) => ({ ...cur, isResolving: true, error: null }));
+      const saved = await invoke<string>("set_league_install_path", {
+        path: chosen,
+      });
+      setLeaguePath({ path: saved, isResolving: false, error: null });
+    } catch (e) {
+      setLeaguePath((cur) => ({
+        ...cur,
+        isResolving: false,
+        error: String(e),
+      }));
+    }
+  };
+
+  const handleAutoDetectLeague = async () => {
+    setLeaguePath((cur) => ({ ...cur, isResolving: true, error: null }));
+    try {
+      const detected = await invoke<string | null>("detect_league_install_path");
+      setLeaguePath({
+        path: detected,
+        isResolving: false,
+        error: detected ? null : "League install path not detected automatically.",
+      });
+    } catch (e) {
+      setLeaguePath({
+        path: null,
+        isResolving: false,
+        error: String(e),
+      });
+    }
+  };
 
   // Re-scan whenever the window regains focus — the user has likely
   // just dropped a file into the skins folder via Explorer.
@@ -461,6 +537,21 @@ function App() {
         )}
       </main>
 
+      {!leaguePath.path && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-background/92 backdrop-blur-md">
+          <div className="w-full max-w-xl rounded-2xl border border-amber-500/40 bg-card px-6 py-6 shadow-2xl">
+            <LeaguePathPrompt
+              path={leaguePath.path}
+              isResolving={leaguePath.isResolving}
+              error={leaguePath.error}
+              onBrowse={handlePickLeagueFolder}
+              onDetect={handleAutoDetectLeague}
+              blocking
+            />
+          </div>
+        </div>
+      )}
+
       {isDragging && !isImporting && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-primary/10 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2 rounded-xl bg-card px-8 py-6 text-center ring-2 ring-primary/50">
@@ -733,6 +824,74 @@ function CustomMenuItem({
     >
       {children}
     </button>
+  );
+}
+
+function LeaguePathPrompt({
+  path,
+  isResolving,
+  error,
+  onBrowse,
+  onDetect,
+  blocking = false,
+}: {
+  path: string | null;
+  isResolving: boolean;
+  error: string | null;
+  onBrowse: () => void;
+  onDetect: () => void;
+  blocking?: boolean;
+}) {
+  if (path) {
+    return (
+      <div className="mb-4 rounded-lg border bg-card px-4 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xs font-medium">League install path</p>
+            <p className="truncate text-xs text-muted-foreground">{path}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button size="xs" variant="outline" onClick={onDetect} disabled={isResolving}>
+              {isResolving ? <Loader2 className="animate-spin" /> : <RotateCw />}
+              Detect
+            </Button>
+            <Button size="xs" variant="outline" onClick={onBrowse} disabled={isResolving}>
+              <FolderOpen />
+              Change
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3",
+        !blocking && "mb-4",
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="min-w-0">
+          <p className="text-base font-semibold">League install path required</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Talon needs your League of Legends install directory before the app can be used. Auto-detect works when the client is running, or you can choose the folder manually.
+          </p>
+          {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button size={blocking ? "sm" : "xs"} variant="outline" onClick={onDetect} disabled={isResolving}>
+            {isResolving ? <Loader2 className="animate-spin" /> : <RotateCw />}
+            Detect
+          </Button>
+          <Button size={blocking ? "sm" : "xs"} onClick={onBrowse} disabled={isResolving}>
+            <FolderOpen />
+            Choose folder
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

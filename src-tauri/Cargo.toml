@@ -39,6 +39,7 @@ ltk_texture = "0.5.0"
 xxhash-rust = { version = "0.8.15", features = ["xxh64", "xxh3"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_ToolHelp",

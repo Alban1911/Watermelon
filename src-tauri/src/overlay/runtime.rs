@@ -10,7 +10,9 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter};
 
 use super::game_paths::GamePathIndex;
-use super::pipeline::build_overlay_fast;
+use super::pipeline::{
+    build_overlay_fast, restore_map_cache_patches, validate_map_cache_against_game,
+};
 
 /// Lowest ID the skin index assigns to user-imported custom skins
 /// (`make_custom_id` in `skins/index.rs` uses the 9,000,000+ range).
@@ -84,12 +86,13 @@ impl HoverRuntime {
     ///     for that custom skin.
     ///   * `Some(id)` with a vanilla ID → ignored; leave the overlay
     ///     alone so the previously-hovered custom skin stays injected.
-    ///   * `None` → clear the overlay (player unfocused the carousel).
+    ///   * `None` → ignored; the client clears hover during game launch,
+    ///     so gameflow cleanup owns tearing down the prepared overlay.
     pub fn handle_hover(&self, skin_id: Option<i64>) {
         let request = match skin_id {
             None => {
-                eprintln!("[Inject] hover=null → queue Clear");
-                HoverRequest::Clear
+                eprintln!("[Inject] hover=null → ignored");
+                return;
             }
             Some(id) if id >= CUSTOM_SKIN_ID_BASE => {
                 eprintln!("[Inject] hover={} (custom) → queue build", id);
@@ -138,6 +141,7 @@ impl Inner {
         match request {
             HoverRequest::Clear => {
                 eprintln!("[Inject] dispatch=Clear");
+                crate::patcher::stop();
                 match clear_overlay_dir(&self.overlay_dir) {
                     Ok(()) => {
                         eprintln!(
@@ -161,11 +165,19 @@ impl Inner {
                             self.overlay_dir.display(),
                             started.elapsed()
                         );
-                        eprintln!(
-                            "[Inject] NOTE: overlay is written to disk. A runoverlay-equivalent \
-                             watcher that injects a patcher DLL into League of Legends.exe is NOT \
-                             yet wired — the game still loads vanilla WADs until that lands."
-                        );
+                        match crate::patcher::start(self.overlay_dir.clone()) {
+                            Ok(()) => eprintln!(
+                                "[Patcher] started for overlay {}",
+                                self.overlay_dir.display()
+                            ),
+                            Err(e) => {
+                                eprintln!("[Patcher] start failed: {}", e);
+                                let _ = self.app.emit(
+                                    "overlay:patcher-failed",
+                                    format!("{}: {}", skin_id, e),
+                                );
+                            }
+                        }
                         let _ = self.app.emit("overlay:built", &stem);
                     }
                     Err(e) => {
@@ -274,9 +286,15 @@ impl Inner {
 }
 
 fn discover_game_path() -> Result<PathBuf> {
-    let install = crate::lcu::process::find_install_directory()
-        .context("locating LeagueClient.exe — is the client running?")?;
-    eprintln!("[Inject] LeagueClient.exe parent = {}", install.display());
+    let install = if let Some(saved) = crate::saved_league_install_dir() {
+        eprintln!("[Inject] using saved League install dir {}", saved.display());
+        saved
+    } else {
+        let detected = crate::lcu::process::find_install_directory()
+            .context("locating LeagueClient.exe — is the client running?")?;
+        eprintln!("[Inject] LeagueClient.exe parent = {}", detected.display());
+        detected
+    };
     // `find_install_directory` returns the directory that contains
     // `LeagueClient.exe`. The WADs live under that directory's `Game`
     // subfolder (`.../League of Legends/Game/DATA/FINAL/...`).
@@ -291,14 +309,25 @@ fn discover_game_path() -> Result<PathBuf> {
     Ok(game)
 }
 
-/// Removes every file and subdirectory under `overlay_dir`, leaving
-/// the directory itself in place. Used by the runtime on `Clear`
-/// hovers and by `cleanup_on_exit` at shutdown.
+pub fn validate_map_cache_startup(overlay_dir: &Path) -> Result<()> {
+    let game_path = discover_game_path()?;
+    let index = GamePathIndex::build(&game_path)
+        .with_context(|| format!("indexing {}", game_path.display()))?;
+    validate_map_cache_against_game(&index, overlay_dir)?;
+    Ok(())
+}
+
+/// Removes transient overlay files under `overlay_dir`, leaving cached
+/// base `Maps/Shipping/Map*.wad.client` files in place so later runtime
+/// injections can patch them in place instead of recopying multi-GB map
+/// WADs every time.
 pub fn clear_overlay_dir(overlay_dir: &Path) -> Result<()> {
     if !overlay_dir.exists() {
         return Ok(());
     }
+    restore_map_cache_patches(overlay_dir)?;
     let mut removed = 0usize;
+    let mut preserved = 0usize;
     for entry in fs::read_dir(overlay_dir)
         .with_context(|| format!("reading {}", overlay_dir.display()))?
     {
@@ -306,18 +335,102 @@ pub fn clear_overlay_dir(overlay_dir: &Path) -> Result<()> {
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            fs::remove_dir_all(&path)
-                .with_context(|| format!("removing {}", path.display()))?;
+            removed += clear_overlay_subdir(&path, overlay_dir)?;
         } else {
-            fs::remove_file(&path)
-                .with_context(|| format!("removing {}", path.display()))?;
+            if is_cached_map_wad(&path, overlay_dir) {
+                preserved += 1;
+                continue;
+            }
+            if remove_transient_overlay_file(&path) {
+                removed += 1;
+            }
         }
-        removed += 1;
     }
     if removed > 0 {
         eprintln!("[Inject] removed {} entries from overlay dir", removed);
     }
+    if preserved > 0 {
+        eprintln!("[Inject] preserved {} cached map WAD(s)", preserved);
+    }
     Ok(())
+}
+
+fn clear_overlay_subdir(dir: &Path, overlay_dir: &Path) -> Result<usize> {
+    let mut removed = 0usize;
+    for entry in fs::read_dir(dir)
+        .with_context(|| format!("reading {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            removed += clear_overlay_subdir(&path, overlay_dir)?;
+            if fs::read_dir(&path)?.next().is_none() {
+                let _ = fs::remove_dir(&path);
+            }
+        } else {
+            if is_cached_map_wad(&path, overlay_dir) {
+                continue;
+            }
+            if remove_transient_overlay_file(&path) {
+                removed += 1;
+            }
+        }
+    }
+    Ok(removed)
+}
+
+fn remove_transient_overlay_file(path: &Path) -> bool {
+    match fs::remove_file(path) {
+        Ok(()) => true,
+        Err(_) => false,
+    }
+}
+
+fn is_cached_map_wad(path: &Path, overlay_dir: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(overlay_dir) else {
+        return false;
+    };
+    let mut comps = rel.components();
+    matches!(
+        (
+            comps.next(),
+            comps.next(),
+            comps.next(),
+            comps.next(),
+            comps.next(),
+            comps.next()
+        ),
+        (
+            Some(std::path::Component::Normal(a)),
+            Some(std::path::Component::Normal(b)),
+            Some(std::path::Component::Normal(c)),
+            Some(std::path::Component::Normal(d)),
+            Some(std::path::Component::Normal(e)),
+            None
+        ) if os_eq_ignore_ascii_case(a, "DATA")
+            && os_eq_ignore_ascii_case(b, "FINAL")
+            && os_eq_ignore_ascii_case(c, "Maps")
+            && os_eq_ignore_ascii_case(d, "Shipping")
+            && is_base_map_wad_filename(e)
+    )
+}
+
+fn os_eq_ignore_ascii_case(value: &std::ffi::OsStr, expected: &str) -> bool {
+    value
+        .to_str()
+        .is_some_and(|s| s.eq_ignore_ascii_case(expected))
+}
+
+fn is_base_map_wad_filename(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if !name.starts_with("Map") || !name.ends_with(".wad.client") {
+        return false;
+    }
+    let stem = &name[..name.len() - ".wad.client".len()];
+    stem[3..].bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Looks up a custom skin id in `skins_index.json` and returns the

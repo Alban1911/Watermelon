@@ -25,3 +25,6 @@ dist-ssr
 
 # Claude Code local state
 .claude/
+
+# Local investigation notes
+WAD_INJECTION_PORT_STATUS.md
