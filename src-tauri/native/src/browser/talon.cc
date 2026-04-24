@@ -20,10 +20,10 @@
 //     base64-embedding into JSON.
 //
 // Routes:
-//   GET /skins/*             -> stream `<appdata>/com.talon.app/library/skins_index.json`
-//   GET /assets/background/* -> stream `<appdata>/com.talon.app/cache/previews/background/*.png`
-//   GET /assets/splash/*     -> stream `<appdata>/com.talon.app/cache/previews/splash/*.png`
-//   GET /assets/tile/*       -> stream `<appdata>/com.talon.app/cache/previews/tile/*.png`
+//   GET /skins/*             -> stream `<appdata>/Talon/library/skins_index.json`
+//   GET /assets/background/* -> stream `<appdata>/Talon/cache/previews/background/*.png`
+//   GET /assets/splash/*     -> stream `<appdata>/Talon/cache/previews/splash/*.png`
+//   GET /assets/tile/*       -> stream `<appdata>/Talon/cache/previews/tile/*.png`
 //
 // The index file is written by Talon's Rust backend whenever the
 // enabled-skin state changes. We don't parse JSON in C++; we just
@@ -36,7 +36,7 @@ static std::wstring get_app_data_root()
     HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
     if (FAILED(hr))
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app";
+    return std::wstring(appdata) + L"\\Talon";
 }
 
 static std::wstring get_skins_index_path()

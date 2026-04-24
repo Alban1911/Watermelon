@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 /// Persistent set of skin IDs that should be enabled. Stored as a JSON array
-/// at %APPDATA%/com.talon.app/state.json.
+/// at %APPDATA%/Talon/state.json.
 #[derive(Debug, Default, Clone)]
 pub struct SkinState {
     enabled: HashSet<String>,
