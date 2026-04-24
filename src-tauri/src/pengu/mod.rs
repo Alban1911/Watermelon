@@ -11,7 +11,7 @@ const FLAG_FILE_NAME: &str = "pengu.flag";
 /// directory. The marker exists while injection is active and lets us
 /// detect crashes from a previous run.
 pub fn flag_path(app_data_dir: &Path) -> PathBuf {
-    app_data_dir.join(FLAG_FILE_NAME)
+    app_data_dir.join("runtime").join(FLAG_FILE_NAME)
 }
 
 /// Returns true if the given IFEO `Debugger` value references our own
@@ -38,10 +38,7 @@ fn is_ours(debugger_value: &str, core_dll_path: &Path) -> bool {
 /// this session rather than stomping on the other tool's state.
 pub fn activate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     if !core_dll_path.exists() {
-        return Err(anyhow!(
-            "core.dll not found at {}",
-            core_dll_path.display()
-        ));
+        return Err(anyhow!("core.dll not found at {}", core_dll_path.display()));
     }
 
     if let Ok(Some(existing)) = ifeo::read_debugger_value() {

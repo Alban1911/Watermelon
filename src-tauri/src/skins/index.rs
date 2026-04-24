@@ -9,8 +9,6 @@ use super::library::SkinEntry;
 use super::state::SkinState;
 use crate::data_dragon;
 
-const INDEX_FILE_NAME: &str = "skins_index.json";
-
 /// Custom skin id scheme (TalonPlugin convention). The 9M range is
 /// reserved for non-Riot IDs. Each champion gets a 100-slot subrange
 /// so up to 99 custom skins per champion fit without collision.
@@ -80,7 +78,7 @@ fn file_version(path: Option<&str>) -> u64 {
 }
 
 /// Builds `skins_index.json` from the current library + state + champion
-/// map and writes it to `<app_data_dir>/skins_index.json`. The file is a
+/// map and writes it to `index_path`. The file is a
 /// `{championId: [entries...]}` map so `core.dll`'s talon scheme handler
 /// can stream it directly, and `preload.js` filters client-side.
 ///
@@ -89,15 +87,14 @@ fn file_version(path: Option<&str>) -> u64 {
 /// library UI, they just don't get an in-game carousel entry until
 /// someone figures out the right alias.
 pub fn regenerate(
-    app_data_dir: &Path,
+    index_path: &Path,
     skins: &[SkinEntry],
     state: &SkinState,
     champion_map: &HashMap<String, i64>,
 ) -> Result<()> {
     // Stable ordering: alphabetical by file stem so index-within-champion
     // ids don't shuffle on every run unless the library itself changes.
-    let mut sorted: Vec<&SkinEntry> =
-        skins.iter().filter(|s| state.is_enabled(&s.id)).collect();
+    let mut sorted: Vec<&SkinEntry> = skins.iter().filter(|s| state.is_enabled(&s.id)).collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
 
     let mut by_champion: BTreeMap<i64, Vec<IndexEntry>> = BTreeMap::new();
@@ -128,10 +125,11 @@ pub fn regenerate(
         output.insert(champion_id.to_string(), entries);
     }
 
-    fs::create_dir_all(app_data_dir).context("creating app_data_dir")?;
-    let out_path = app_data_dir.join(INDEX_FILE_NAME);
+    if let Some(parent) = index_path.parent() {
+        fs::create_dir_all(parent).context("creating skin index directory")?;
+    }
     let json = serde_json::to_string(&output).context("serializing skin index")?;
-    fs::write(&out_path, json).context("writing skin index file")?;
+    fs::write(index_path, json).context("writing skin index file")?;
 
     Ok(())
 }

@@ -20,23 +20,31 @@
 //     base64-embedding into JSON.
 //
 // Routes:
-//   GET /skins/*          -> stream `<appdata>/com.talon.app/skins_index.json`
-//   GET /assets/background/* -> stream `<appdata>/com.talon.app/background_previews/*.png`
-//   GET /assets/splash/*     -> stream `<appdata>/com.talon.app/previews/*.png`
-//   GET /assets/tile/*       -> stream `<appdata>/com.talon.app/tile_previews/*.png`
+//   GET /skins/*             -> stream `<appdata>/com.talon.app/library/skins_index.json`
+//   GET /assets/background/* -> stream `<appdata>/com.talon.app/cache/previews/background/*.png`
+//   GET /assets/splash/*     -> stream `<appdata>/com.talon.app/cache/previews/splash/*.png`
+//   GET /assets/tile/*       -> stream `<appdata>/com.talon.app/cache/previews/tile/*.png`
 //
 // The index file is written by Talon's Rust backend whenever the
 // enabled-skin state changes. We don't parse JSON in C++; we just
 // stream the file's bytes as `application/json` and let `preload.js`
 // filter by championId client-side.
 
-static std::wstring get_skins_index_path()
+static std::wstring get_app_data_root()
 {
     WCHAR appdata[MAX_PATH];
     HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
     if (FAILED(hr))
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\skins_index.json";
+    return std::wstring(appdata) + L"\\com.talon.app";
+}
+
+static std::wstring get_skins_index_path()
+{
+    std::wstring root = get_app_data_root();
+    if (root.empty())
+        return L"";
+    return root + L"\\library\\skins_index.json";
 }
 
 static std::string get_skins_index_version()
@@ -56,47 +64,42 @@ static std::string get_skins_index_version()
 
 static std::wstring get_previews_dir()
 {
-    WCHAR appdata[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
-    if (FAILED(hr))
+    std::wstring root = get_app_data_root();
+    if (root.empty())
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\previews";
+    return root + L"\\cache\\previews\\splash";
 }
 
 static std::wstring get_background_previews_dir()
 {
-    WCHAR appdata[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
-    if (FAILED(hr))
+    std::wstring root = get_app_data_root();
+    if (root.empty())
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\background_previews";
+    return root + L"\\cache\\previews\\background";
 }
 
 static std::wstring get_tile_previews_dir()
 {
-    WCHAR appdata[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
-    if (FAILED(hr))
+    std::wstring root = get_app_data_root();
+    if (root.empty())
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\tile_previews";
+    return root + L"\\cache\\previews\\tile";
 }
 
 static std::wstring get_custom_background_previews_dir()
 {
-    WCHAR appdata[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
-    if (FAILED(hr))
+    std::wstring root = get_app_data_root();
+    if (root.empty())
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\custom_background_previews";
+    return root + L"\\user-assets\\backgrounds";
 }
 
 static std::wstring get_custom_tile_previews_dir()
 {
-    WCHAR appdata[MAX_PATH];
-    HRESULT hr = SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, appdata);
-    if (FAILED(hr))
+    std::wstring root = get_app_data_root();
+    if (root.empty())
         return L"";
-    return std::wstring(appdata) + L"\\com.talon.app\\custom_tile_previews";
+    return root + L"\\user-assets\\tiles";
 }
 
 static std::u16string wide_to_u16(const std::wstring &ws)

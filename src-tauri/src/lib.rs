@@ -7,11 +7,11 @@ mod pengu;
 mod skins;
 mod wad;
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
 
@@ -57,7 +57,15 @@ pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
 
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(data_dir.join("config.json"))
+    migrate_app_config(&data_dir)?;
+    Ok(data_dir.join("settings").join("config.json"))
+}
+
+fn migrate_app_config(data_dir: &std::path::Path) -> Result<(), String> {
+    migrate_file_if_needed(
+        &data_dir.join("config.json"),
+        &data_dir.join("settings").join("config.json"),
+    )
 }
 
 fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
@@ -81,7 +89,10 @@ fn save_app_config(app: &AppHandle, config: &AppConfig) -> Result<(), String> {
 fn normalize_league_install_dir(path: &std::path::Path) -> Result<PathBuf, String> {
     let candidate = if path.join("Game").join("DATA").join("FINAL").is_dir() {
         path.to_path_buf()
-    } else if path.file_name().and_then(|s| s.to_str()).is_some_and(|s| s.eq_ignore_ascii_case("Game"))
+    } else if path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("Game"))
         && path.join("DATA").join("FINAL").is_dir()
     {
         path.parent()
@@ -93,7 +104,9 @@ fn normalize_league_install_dir(path: &std::path::Path) -> Result<PathBuf, Strin
             path.display()
         ));
     };
-    candidate.canonicalize().map_err(|e| format!("canonicalizing {}: {e}", candidate.display()))
+    candidate
+        .canonicalize()
+        .map_err(|e| format!("canonicalizing {}: {e}", candidate.display()))
 }
 
 fn path_to_user_string(path: &std::path::Path) -> String {
@@ -198,6 +211,118 @@ fn ps_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
+fn migrate_file_if_needed(old: &std::path::Path, new: &std::path::Path) -> Result<(), String> {
+    if !old.exists() || new.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(old, new)
+        .map_err(|e| format!("migrating {} -> {}: {e}", old.display(), new.display()))
+}
+
+fn migrate_dir_if_needed(old: &std::path::Path, new: &std::path::Path) -> Result<(), String> {
+    if !old.exists() || new.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = new.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::rename(old, new)
+        .map_err(|e| format!("migrating {} -> {}: {e}", old.display(), new.display()))
+}
+
+fn migrate_app_data_layout(data_dir: &std::path::Path) -> Result<(), String> {
+    migrate_app_config(data_dir)?;
+
+    migrate_dir_if_needed(
+        &data_dir.join("skins"),
+        &data_dir.join("library").join("skins"),
+    )?;
+    migrate_file_if_needed(
+        &data_dir.join("state.json"),
+        &data_dir.join("library").join("state.json"),
+    )?;
+    migrate_file_if_needed(
+        &data_dir.join("skins_index.json"),
+        &data_dir.join("library").join("skins_index.json"),
+    )?;
+
+    let preview_cache = data_dir.join("cache").join("previews");
+    migrate_dir_if_needed(&data_dir.join("previews"), &preview_cache.join("splash"))?;
+    migrate_dir_if_needed(
+        &data_dir.join("background_previews"),
+        &preview_cache.join("background"),
+    )?;
+    migrate_dir_if_needed(&data_dir.join("tile_previews"), &preview_cache.join("tile"))?;
+    migrate_dir_if_needed(
+        &data_dir.join("champion_icons"),
+        &data_dir.join("cache").join("champion-icons"),
+    )?;
+    migrate_dir_if_needed(
+        &data_dir.join("cslol-installed"),
+        &data_dir.join("cache").join("cslol-installed"),
+    )?;
+
+    migrate_dir_if_needed(
+        &data_dir.join("custom_background_previews"),
+        &data_dir.join("user-assets").join("backgrounds"),
+    )?;
+    migrate_dir_if_needed(
+        &data_dir.join("custom_tile_previews"),
+        &data_dir.join("user-assets").join("tiles"),
+    )?;
+
+    migrate_dir_if_needed(
+        &data_dir.join("overlay"),
+        &data_dir.join("runtime").join("overlay"),
+    )?;
+    migrate_file_if_needed(
+        &data_dir.join("overlay.config"),
+        &data_dir.join("runtime").join("overlay.config"),
+    )?;
+    migrate_file_if_needed(
+        &data_dir.join("pengu.flag"),
+        &data_dir.join("runtime").join("pengu.flag"),
+    )?;
+    write_storage_readme(data_dir)?;
+
+    Ok(())
+}
+
+fn write_storage_readme(data_dir: &std::path::Path) -> Result<(), String> {
+    const README: &str = "\
+Talon app data
+
+settings/
+  config.json                    User preferences such as the League install path.
+
+library/
+  skins/                         Imported .fantome skin files.
+  state.json                     Enabled/disabled skin state.
+  skins_index.json               Generated in-game carousel index.
+
+user-assets/
+  backgrounds/                   Custom background images chosen by the user.
+  tiles/                         Custom tile images chosen by the user.
+
+cache/
+  previews/splash/               Generated splash previews.
+  previews/background/           Generated carousel backgrounds.
+  previews/tile/                 Generated champion tile images.
+  champion-icons/                Cached Data Dragon champion icons.
+  cslol-installed/               Legacy/generated cslol install cache.
+
+runtime/
+  overlay/                       Temporary game overlay files.
+  pengu.flag                     Injection activation marker.
+  overlay.config                 Legacy runtime marker.
+";
+    let path = data_dir.join("README.txt");
+    std::fs::write(&path, README).map_err(|e| format!("writing {}: {e}", path.display()))
+}
+
 pub(crate) fn cleanup_overlay_session(reason: &str) {
     patcher::stop();
     if let Some(overlay_dir) = OVERLAY_DIR.get() {
@@ -208,15 +333,16 @@ pub(crate) fn cleanup_overlay_session(reason: &str) {
     }
 }
 
-/// Rebuilds `<app_data_dir>/skins_index.json` from the current library
+/// Rebuilds the library skin index from the current library
 /// scan + state + champion map. Called on every skin-mutating command so
 /// `core.dll`'s talon scheme handler always serves up-to-date data.
 /// Best-effort: logs errors but never fails the caller. If the champion
 /// map isn't loaded yet (Data Dragon fetch still in flight), this is a
 /// no-op and the file will be written later when the fetch completes.
 fn regenerate_skin_index(app: &AppHandle) {
-    let Ok(paths) = resolve_paths(app) else { return };
-    let Ok(data_dir) = app.path().app_data_dir() else { return };
+    let Ok(paths) = resolve_paths(app) else {
+        return;
+    };
     let Some(champion_map) = CHAMPION_MAP.get() else {
         eprintln!("[SkinIndex] champion map not loaded yet, skipping regenerate");
         return;
@@ -244,7 +370,8 @@ fn regenerate_skin_index(app: &AppHandle) {
             return;
         }
     };
-    if let Err(e) = skins::index::regenerate(&data_dir, &skins, &state, champion_map) {
+    if let Err(e) = skins::index::regenerate(&paths.skins_index_path, &skins, &state, champion_map)
+    {
         eprintln!("[SkinIndex] regenerate failed: {}", e);
     }
 }
@@ -264,7 +391,11 @@ fn warm_assets_for_library(app: &AppHandle) -> Result<bool, String> {
         if path.extension().and_then(|e| e.to_str()) != Some("fantome") {
             continue;
         }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+        let Some(stem) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_string)
+        else {
             continue;
         };
         let meta = skins::fantome::read(&path).ok();
@@ -389,17 +520,22 @@ struct AppPaths {
 
 fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    migrate_app_data_layout(&data_dir)?;
+    let library_dir = data_dir.join("library");
+    let preview_cache_dir = data_dir.join("cache").join("previews");
+    let user_assets_dir = data_dir.join("user-assets");
+    let runtime_dir = data_dir.join("runtime");
     Ok(AppPaths {
-        skins_dir: data_dir.join("skins"),
-        state_path: data_dir.join("state.json"),
-        skins_index_path: data_dir.join("skins_index.json"),
-        overlay_dir: data_dir.join("overlay"),
-        previews_dir: data_dir.join("previews"),
-        background_previews_dir: data_dir.join("background_previews"),
-        custom_background_previews_dir: data_dir.join("custom_background_previews"),
-        tile_previews_dir: data_dir.join("tile_previews"),
-        custom_tile_previews_dir: data_dir.join("custom_tile_previews"),
-        champion_icons_dir: data_dir.join("champion_icons"),
+        skins_dir: library_dir.join("skins"),
+        state_path: library_dir.join("state.json"),
+        skins_index_path: library_dir.join("skins_index.json"),
+        overlay_dir: runtime_dir.join("overlay"),
+        previews_dir: preview_cache_dir.join("splash"),
+        background_previews_dir: preview_cache_dir.join("background"),
+        custom_background_previews_dir: user_assets_dir.join("backgrounds"),
+        tile_previews_dir: preview_cache_dir.join("tile"),
+        custom_tile_previews_dir: user_assets_dir.join("tiles"),
+        champion_icons_dir: data_dir.join("cache").join("champion-icons"),
     })
 }
 
@@ -436,7 +572,8 @@ fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
         let Some(normalized_stem) = PathBuf::from(&normalized_name)
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(str::to_string) else {
+            .map(str::to_string)
+        else {
             continue;
         };
 
@@ -448,7 +585,8 @@ fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
         let Some(new_id) = target_path
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(str::to_string) else {
+            .map(str::to_string)
+        else {
             continue;
         };
 
@@ -560,8 +698,7 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
 
     let fantome_path = paths.skins_dir.join(format!("{id}.fantome"));
     if fantome_path.exists() {
-        std::fs::remove_file(&fantome_path)
-            .map_err(|e| format!("removing .fantome: {e}"))?;
+        std::fs::remove_file(&fantome_path).map_err(|e| format!("removing .fantome: {e}"))?;
     }
 
     // Cached / derived files — the .fantome is already gone so we don't
@@ -569,7 +706,9 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
     for cached in [
         paths.previews_dir.join(format!("{id}.png")),
         paths.background_previews_dir.join(format!("{id}.png")),
-        paths.custom_background_previews_dir.join(format!("{id}.png")),
+        paths
+            .custom_background_previews_dir
+            .join(format!("{id}.png")),
         paths.tile_previews_dir.join(format!("{id}.png")),
         paths.custom_tile_previews_dir.join(format!("{id}.png")),
     ] {
@@ -578,12 +717,9 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
         }
     }
 
-    let mut state =
-        SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
+    let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     state.set(id, false);
-    state
-        .save(&paths.state_path)
-        .map_err(|e| e.to_string())?;
+    state.save(&paths.state_path).map_err(|e| e.to_string())?;
 
     regenerate_skin_index(&app);
     spawn_champ_select_refresh();
@@ -681,11 +817,7 @@ async fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn import_skin_bytes(
-    app: AppHandle,
-    filename: String,
-    bytes: Vec<u8>,
-) -> Result<(), String> {
+async fn import_skin_bytes(app: AppHandle, filename: String, bytes: Vec<u8>) -> Result<(), String> {
     let task_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let paths = resolve_paths(&task_app)?;
@@ -760,12 +892,12 @@ async fn set_custom_asset(
         };
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
 
-        let source_bytes = std::fs::read(&source)
-            .map_err(|e| format!("reading {source}: {e}"))?;
+        let source_bytes = std::fs::read(&source).map_err(|e| format!("reading {source}: {e}"))?;
         let dest = custom_asset_dest(&paths, kind, &id);
         match kind {
-            CustomAssetKind::Tile => skins::preview::save_custom_tile(&source_bytes, &dest)
-                .map_err(|e| e.to_string())?,
+            CustomAssetKind::Tile => {
+                skins::preview::save_custom_tile(&source_bytes, &dest).map_err(|e| e.to_string())?
+            }
             CustomAssetKind::Background => {
                 skins::preview::save_custom_background(&source_bytes, &dest)
                     .map_err(|e| e.to_string())?
@@ -930,10 +1062,7 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     match data_dragon::fetch_champion_map().await {
                         Ok(map) => {
-                            eprintln!(
-                                "[DataDragon] loaded {} champion entries",
-                                map.len()
-                            );
+                            eprintln!("[DataDragon] loaded {} champion entries", map.len());
                             let _ = CHAMPION_MAP.set(map);
                             regenerate_skin_index(&handle);
                         }
@@ -975,7 +1104,9 @@ pub fn run() {
                         }
                         let overlay_dir = paths.overlay_dir.clone();
                         tauri::async_runtime::spawn_blocking(move || {
-                            if let Err(e) = overlay::runtime::validate_map_cache_startup(&overlay_dir) {
+                            if let Err(e) =
+                                overlay::runtime::validate_map_cache_startup(&overlay_dir)
+                            {
                                 eprintln!("[Overlay] startup map-cache validation skipped: {}", e);
                             }
                         });
