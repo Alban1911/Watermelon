@@ -1,0 +1,4 @@
+# Keep the repository language stats focused on the application code.
+# The C++ native bridge and bundled CEF headers dominate Linguist otherwise.
+src-tauri/native/** linguist-vendored
+src-tauri/native/cef/include/** linguist-generated=true
