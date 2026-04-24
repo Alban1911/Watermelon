@@ -8,8 +8,10 @@ import {
   Moon,
   Plus,
   RotateCw,
+  Settings,
   Sun,
   Trash2,
+  X,
 } from "lucide-react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -90,6 +92,7 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Skin | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isDark, setIsDark] = useState(readInitialTheme);
   const [groupByChampion, setGroupByChampion] = useState(() => {
     // Default to grouped on first launch; respect the user's explicit
@@ -323,6 +326,16 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [deleteTarget]);
 
+  // Close the settings dialog on Escape.
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [settingsOpen]);
+
   const importFiles = useCallback(
     async (files: File[]) => {
       const fantomes = files.filter((f) =>
@@ -428,6 +441,15 @@ function App() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <Settings />
+            </Button>
             <Button
               size="icon"
               variant="ghost"
@@ -552,6 +574,15 @@ function App() {
         </div>
       )}
 
+      {settingsOpen && (
+        <SettingsDialog
+          leaguePath={leaguePath}
+          onBrowseLeague={handlePickLeagueFolder}
+          onDetectLeague={handleAutoDetectLeague}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
       {isDragging && !isImporting && (
         <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-primary/10 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2 rounded-xl bg-card px-8 py-6 text-center ring-2 ring-primary/50">
@@ -607,6 +638,97 @@ function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function SettingsDialog({
+  leaguePath,
+  onBrowseLeague,
+  onDetectLeague,
+  onClose,
+}: {
+  leaguePath: LeaguePathState;
+  onBrowseLeague: () => void;
+  onDetectLeague: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-background/60 px-4 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-lg rounded-xl bg-card p-5 shadow-2xl ring-1 ring-border"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-5 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">Settings</h2>
+            <p className="text-xs text-muted-foreground">
+              App preferences and League installation.
+            </p>
+          </div>
+          <Button
+            size="icon-sm"
+            variant="ghost"
+            onClick={onClose}
+            aria-label="Close settings"
+            title="Close"
+          >
+            <X />
+          </Button>
+        </div>
+
+        <div className="space-y-5">
+          <section>
+            <div className="mb-2">
+              <h3 className="text-sm font-medium">League game path</h3>
+              <p className="text-xs text-muted-foreground">
+                Select the League of Legends install folder.
+              </p>
+            </div>
+            <div className="rounded-lg border bg-background px-3 py-3">
+              <p
+                className={cn(
+                  "break-all text-xs",
+                  leaguePath.path ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                {leaguePath.path ?? "No League install path selected"}
+              </p>
+              {leaguePath.error && (
+                <p className="mt-2 text-xs text-destructive">
+                  {leaguePath.error}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onDetectLeague}
+                  disabled={leaguePath.isResolving}
+                >
+                  {leaguePath.isResolving ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <RotateCw />
+                  )}
+                  Detect
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={onBrowseLeague}
+                  disabled={leaguePath.isResolving}
+                >
+                  <FolderOpen />
+                  Choose folder
+                </Button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

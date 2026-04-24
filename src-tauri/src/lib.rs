@@ -96,6 +96,20 @@ fn normalize_league_install_dir(path: &std::path::Path) -> Result<PathBuf, Strin
     candidate.canonicalize().map_err(|e| format!("canonicalizing {}: {e}", candidate.display()))
 }
 
+fn path_to_user_string(path: &std::path::Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(stripped) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{stripped}");
+        }
+        if let Some(stripped) = path.strip_prefix(r"\\?\") {
+            return stripped.to_string();
+        }
+    }
+    path.into_owned()
+}
+
 fn set_saved_league_install_dir(path: Option<PathBuf>) {
     *league_install_dir_cell()
         .lock()
@@ -785,17 +799,20 @@ fn clear_custom_asset(app: &AppHandle, id: &str, kind: CustomAssetKind) -> Resul
 #[tauri::command]
 fn get_league_install_path(app: AppHandle) -> Result<Option<String>, String> {
     let config = load_app_config(&app)?;
-    Ok(config.league_install_dir)
+    Ok(config
+        .league_install_dir
+        .map(|path| path_to_user_string(std::path::Path::new(&path))))
 }
 
 #[tauri::command]
 fn set_league_install_path(app: AppHandle, path: String) -> Result<String, String> {
     let normalized = normalize_league_install_dir(std::path::Path::new(&path))?;
+    let user_path = path_to_user_string(&normalized);
     let mut config = load_app_config(&app)?;
-    config.league_install_dir = Some(normalized.to_string_lossy().into_owned());
+    config.league_install_dir = Some(user_path.clone());
     save_app_config(&app, &config)?;
     set_saved_league_install_dir(Some(normalized.clone()));
-    Ok(normalized.to_string_lossy().into_owned())
+    Ok(user_path)
 }
 
 #[tauri::command]
@@ -805,7 +822,7 @@ fn detect_league_install_path(app: AppHandle) -> Result<Option<String>, String> 
         Err(_) => return Ok(None),
     };
     let normalized = normalize_league_install_dir(&detected)?;
-    let normalized_str = normalized.to_string_lossy().into_owned();
+    let normalized_str = path_to_user_string(&normalized);
     let mut config = load_app_config(&app)?;
     if config.league_install_dir.as_deref() != Some(normalized_str.as_str()) {
         config.league_install_dir = Some(normalized_str.clone());
