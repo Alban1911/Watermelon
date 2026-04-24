@@ -57,15 +57,7 @@ pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
 
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    migrate_app_config(&data_dir)?;
     Ok(data_dir.join("settings").join("config.json"))
-}
-
-fn migrate_app_config(data_dir: &std::path::Path) -> Result<(), String> {
-    migrate_file_if_needed(
-        &data_dir.join("config.json"),
-        &data_dir.join("settings").join("config.json"),
-    )
 }
 
 fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
@@ -209,86 +201,6 @@ fn spawn_detached_dev_cleanup() {}
 
 fn ps_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-fn migrate_file_if_needed(old: &std::path::Path, new: &std::path::Path) -> Result<(), String> {
-    if !old.exists() || new.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = new.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(old, new)
-        .map_err(|e| format!("migrating {} -> {}: {e}", old.display(), new.display()))
-}
-
-fn migrate_dir_if_needed(old: &std::path::Path, new: &std::path::Path) -> Result<(), String> {
-    if !old.exists() || new.exists() {
-        return Ok(());
-    }
-    if let Some(parent) = new.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::rename(old, new)
-        .map_err(|e| format!("migrating {} -> {}: {e}", old.display(), new.display()))
-}
-
-fn migrate_app_data_layout(data_dir: &std::path::Path) -> Result<(), String> {
-    migrate_app_config(data_dir)?;
-
-    migrate_dir_if_needed(
-        &data_dir.join("skins"),
-        &data_dir.join("library").join("skins"),
-    )?;
-    migrate_file_if_needed(
-        &data_dir.join("state.json"),
-        &data_dir.join("library").join("state.json"),
-    )?;
-    migrate_file_if_needed(
-        &data_dir.join("skins_index.json"),
-        &data_dir.join("library").join("skins_index.json"),
-    )?;
-
-    let preview_cache = data_dir.join("cache").join("previews");
-    migrate_dir_if_needed(&data_dir.join("previews"), &preview_cache.join("splash"))?;
-    migrate_dir_if_needed(
-        &data_dir.join("background_previews"),
-        &preview_cache.join("background"),
-    )?;
-    migrate_dir_if_needed(&data_dir.join("tile_previews"), &preview_cache.join("tile"))?;
-    migrate_dir_if_needed(
-        &data_dir.join("champion_icons"),
-        &data_dir.join("cache").join("champion-icons"),
-    )?;
-    migrate_dir_if_needed(
-        &data_dir.join("cslol-installed"),
-        &data_dir.join("cache").join("cslol-installed"),
-    )?;
-
-    migrate_dir_if_needed(
-        &data_dir.join("custom_background_previews"),
-        &data_dir.join("user-assets").join("backgrounds"),
-    )?;
-    migrate_dir_if_needed(
-        &data_dir.join("custom_tile_previews"),
-        &data_dir.join("user-assets").join("tiles"),
-    )?;
-
-    migrate_dir_if_needed(
-        &data_dir.join("overlay"),
-        &data_dir.join("runtime").join("overlay"),
-    )?;
-    migrate_file_if_needed(
-        &data_dir.join("overlay.config"),
-        &data_dir.join("runtime").join("overlay.config"),
-    )?;
-    migrate_file_if_needed(
-        &data_dir.join("pengu.flag"),
-        &data_dir.join("runtime").join("pengu.flag"),
-    )?;
-    write_storage_readme(data_dir)?;
-
-    Ok(())
 }
 
 fn write_storage_readme(data_dir: &std::path::Path) -> Result<(), String> {
@@ -520,7 +432,7 @@ struct AppPaths {
 
 fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    migrate_app_data_layout(&data_dir)?;
+    write_storage_readme(&data_dir)?;
     let library_dir = data_dir.join("library");
     let preview_cache_dir = data_dir.join("cache").join("previews");
     let user_assets_dir = data_dir.join("user-assets");
