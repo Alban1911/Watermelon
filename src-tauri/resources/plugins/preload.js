@@ -51,6 +51,8 @@
     const BRIDGE_RETRY_MAX_MS = 30000;
     const SKIN_NAME_SELECTORS = ['.skin-name-text', '.skin-name'];
     const SKIN_MONITOR_POLL_MS = 250;
+    const GOLDEN_BORDER_ENFORCE_MS = 50;
+    const TALON_GOLDEN_STYLE_ID = 'talon-golden-border-style';
 
     const pluginApis = {};
     window.__talonPluginApis = pluginApis;
@@ -67,11 +69,18 @@
     // is set. Includes the base skin, every carousel entry (native +
     // injected Talon custom), and each entry's childSkins (chromas).
     const skinNameToId = new Map();
+    const skinIdToSkin = new Map();
     let bridgeSocket = null;
     let bridgeRetryDelay = BRIDGE_RETRY_BASE_MS;
     let lastSentSkinId = null;
     let skinMonitorInstalled = false;
     let skinMonitorPollTimer = null;
+    let goldenBorderTimer = null;
+    let goldenBorderSkinId = null;
+    let goldenBorderMode = null;
+    let goldenBorderSkin = null;
+    let styledGoldenItem = null;
+    let styledGoldenThumbnail = null;
 
     // ── RCP plugin API capture ───────────────────────────────────────
     const originalDispatchEvent = document.dispatchEvent.bind(document);
@@ -162,6 +171,246 @@
     }
 
     // ── Carousel cache hook ──────────────────────────────────────────
+    // Talon custom skins are not server-owned carousel selections, so the
+    // League client can leave the base skin visually selected. Mirror upstream's
+    // fake selected frame by styling the centered carousel item while the
+    // visible skin resolves to one of our custom IDs.
+    function injectGoldenBorderStyle() {
+        if (document.getElementById(TALON_GOLDEN_STYLE_ID)) {
+            return;
+        }
+        const style = document.createElement('style');
+        style.id = TALON_GOLDEN_STYLE_ID;
+        style.textContent = `
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected) {
+  background: #3c3c41 !important;
+  outline: 1px solid transparent !important;
+}
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected) .skin-selection-thumbnail {
+  height: calc(100% - 2px) !important;
+  margin: 1px !important;
+}
+.skin-selection-carousel .skin-selection-item.skin-carousel-offset-2:hover .skin-selection-thumbnail,
+.skin-selection-carousel .skin-selection-item.skin-carousel-offset-2.skin-selection-item-selected:hover .skin-selection-thumbnail {
+  filter: none !important;
+}
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected):hover {
+  background: linear-gradient(180deg, #f0e6b2 0%, #f5ecc4 30%, #d4a83c 70%, #c89b3c 100%) !important;
+  outline: 1px solid rgba(1, 10, 19, 0.6) !important;
+}
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected):hover .skin-selection-thumbnail {
+  filter: brightness(1.2) saturate(1.1) !important;
+}
+`;
+        document.head.appendChild(style);
+    }
+
+    function removeGoldenBorderStyle() {
+        const style = document.getElementById(TALON_GOLDEN_STYLE_ID);
+        if (style && style.parentNode) {
+            style.parentNode.removeChild(style);
+        }
+    }
+
+    function clearGoldenBorderItem() {
+        if (styledGoldenItem) {
+            styledGoldenItem.classList.remove('talon-golden-selected');
+            styledGoldenItem.style.removeProperty('background');
+            styledGoldenItem.style.removeProperty('outline');
+            styledGoldenItem = null;
+        }
+        if (styledGoldenThumbnail) {
+            styledGoldenThumbnail.style.removeProperty('height');
+            styledGoldenThumbnail.style.removeProperty('margin');
+            styledGoldenThumbnail = null;
+        }
+    }
+
+    function normalizeAssetUrl(url) {
+        if (typeof url !== 'string' || url.length === 0) {
+            return null;
+        }
+        const q = url.indexOf('?');
+        return q === -1 ? url : url.slice(0, q);
+    }
+
+    function collectSkinAssetUrls(skin) {
+        if (!skin) {
+            return [];
+        }
+        return [
+            skin.tilePath,
+            skin.splashPath,
+            skin.uncenteredSplashPath,
+            skin.centeredSplashPath,
+            skin.loadScreenPath,
+            skin.loadscreenPath,
+            skin.cardSplashPath,
+            skin.iconPath,
+            skin.squarePortraitPath,
+            skin.chromaPreviewPath,
+        ]
+            .map(normalizeAssetUrl)
+            .filter(Boolean);
+    }
+
+    function elementUsesAsset(element, assetUrls) {
+        if (!element || assetUrls.length === 0) {
+            return false;
+        }
+        const src = normalizeAssetUrl(element.currentSrc || element.src || '');
+        if (src && assetUrls.some((url) => src.includes(url) || url.includes(src))) {
+            return true;
+        }
+        const style = window.getComputedStyle(element);
+        const background = style && style.backgroundImage;
+        return (
+            typeof background === 'string' &&
+            assetUrls.some((url) => background.includes(url))
+        );
+    }
+
+    function findCarouselItemForSkin(skin) {
+        const assetUrls = collectSkinAssetUrls(skin);
+        if (assetUrls.length === 0) {
+            return null;
+        }
+        const items = document.querySelectorAll(
+            '.skin-selection-carousel .skin-selection-item'
+        );
+        for (const item of items) {
+            if (elementUsesAsset(item, assetUrls)) {
+                return item;
+            }
+            const media = item.querySelectorAll('img, [style]');
+            for (const element of media) {
+                if (elementUsesAsset(element, assetUrls)) {
+                    return item;
+                }
+            }
+        }
+        return null;
+    }
+
+    function enforceGoldenBorder() {
+        const centeredItem = document.querySelector(
+            '.skin-selection-carousel .skin-selection-item.skin-carousel-offset-2'
+        );
+        if (!centeredItem) {
+            return;
+        }
+        const thumbnail = centeredItem.querySelector('.skin-selection-thumbnail');
+        if (!thumbnail) {
+            return;
+        }
+
+        if (styledGoldenItem && styledGoldenItem !== centeredItem) {
+            clearGoldenBorderItem();
+        }
+
+        styledGoldenItem = centeredItem;
+        styledGoldenThumbnail = thumbnail;
+
+        centeredItem.classList.add('talon-golden-selected');
+        centeredItem.style.setProperty(
+            'background',
+            'linear-gradient(0deg, #c8aa6e 0, #c89b3c 44%, #a07b32 59%, #785a28)',
+            'important'
+        );
+        centeredItem.style.setProperty(
+            'outline',
+            '1px solid rgba(1, 10, 19, 0.6)',
+            'important'
+        );
+        thumbnail.style.setProperty('height', 'calc(100% - 4px)', 'important');
+        thumbnail.style.setProperty('margin', '2px', 'important');
+    }
+
+    function enforceHeldGoldenBorder() {
+        const item = findCarouselItemForSkin(goldenBorderSkin);
+        if (item && item !== styledGoldenItem) {
+            clearGoldenBorderItem();
+            styledGoldenItem = item;
+            styledGoldenThumbnail = item.querySelector('.skin-selection-thumbnail');
+        }
+        if (!styledGoldenItem || !styledGoldenItem.isConnected) {
+            stopGoldenBorder();
+            return;
+        }
+        const thumbnail =
+            styledGoldenThumbnail && styledGoldenThumbnail.isConnected
+                ? styledGoldenThumbnail
+                : styledGoldenItem.querySelector('.skin-selection-thumbnail');
+        if (!thumbnail) {
+            stopGoldenBorder();
+            return;
+        }
+
+        styledGoldenThumbnail = thumbnail;
+        styledGoldenItem.classList.add('talon-golden-selected');
+        styledGoldenItem.style.setProperty(
+            'background',
+            'linear-gradient(0deg, #c8aa6e 0, #c89b3c 44%, #a07b32 59%, #785a28)',
+            'important'
+        );
+        styledGoldenItem.style.setProperty(
+            'outline',
+            '1px solid rgba(1, 10, 19, 0.6)',
+            'important'
+        );
+        thumbnail.style.setProperty('height', 'calc(100% - 4px)', 'important');
+        thumbnail.style.setProperty('margin', '2px', 'important');
+    }
+
+    function startGoldenBorder(skinId) {
+        if (
+            goldenBorderSkinId === skinId &&
+            goldenBorderTimer !== null &&
+            goldenBorderMode === 'centered'
+        ) {
+            return;
+        }
+        stopGoldenBorder();
+        goldenBorderSkinId = skinId;
+        goldenBorderSkin = skinIdToSkin.get(skinId) || null;
+        goldenBorderMode = 'centered';
+        injectGoldenBorderStyle();
+        enforceGoldenBorder();
+        goldenBorderTimer = setInterval(enforceGoldenBorder, GOLDEN_BORDER_ENFORCE_MS);
+        log('started golden border enforcement for talon skin', skinId);
+    }
+
+    function holdGoldenBorderOnLastCustom() {
+        if (goldenBorderSkinId === null) {
+            return;
+        }
+        if (goldenBorderTimer !== null && goldenBorderMode !== 'held') {
+            clearInterval(goldenBorderTimer);
+            goldenBorderTimer = null;
+        }
+        goldenBorderMode = 'held';
+        injectGoldenBorderStyle();
+        enforceHeldGoldenBorder();
+        if (goldenBorderTimer === null) {
+            goldenBorderTimer = setInterval(
+                enforceHeldGoldenBorder,
+                GOLDEN_BORDER_ENFORCE_MS
+            );
+        }
+    }
+
+    function stopGoldenBorder() {
+        if (goldenBorderTimer !== null) {
+            clearInterval(goldenBorderTimer);
+            goldenBorderTimer = null;
+        }
+        goldenBorderSkinId = null;
+        goldenBorderSkin = null;
+        goldenBorderMode = null;
+        removeGoldenBorderStyle();
+        clearGoldenBorderItem();
+    }
+
     function installCacheHook(cache) {
         cacheRef = cache;
         const originalSet = cache.set.bind(cache);
@@ -361,6 +610,7 @@
             return;
         }
         skinNameToId.clear();
+        skinIdToSkin.clear();
         for (const skin of value.data) {
             addSkinToMap(skin);
             if (skin && Array.isArray(skin.childSkins)) {
@@ -375,9 +625,23 @@
         if (!skin || typeof skin.id !== 'number') {
             return;
         }
+        skinIdToSkin.set(skin.id, skin);
         if (typeof skin.name === 'string' && skin.name.length > 0) {
             skinNameToId.set(skin.name.trim().toLowerCase(), skin.id);
         }
+    }
+
+    function isLockedCarouselSkin(skin) {
+        if (!skin) {
+            return false;
+        }
+        const ownership = skin.ownership || {};
+        return (
+            skin.disabled === true ||
+            skin.unlocked === false ||
+            ownership.owned === false ||
+            ownership.rental?.rented === false && ownership.owned === false
+        );
     }
 
     // Reads the currently-displayed skin name from the carousel UI.
@@ -405,9 +669,42 @@
         return null;
     }
 
+    function currentCenteredSkinLooksBase() {
+        const centeredItem = document.querySelector(
+            '.skin-selection-carousel .skin-selection-item.skin-carousel-offset-2'
+        );
+        if (!centeredItem) {
+            return false;
+        }
+        if (centeredItem.classList.contains('talon-golden-selected')) {
+            return false;
+        }
+        const style = window.getComputedStyle(centeredItem);
+        const background = style && style.backgroundImage;
+        if (typeof background === 'string' && background.includes('talon/assets')) {
+            return false;
+        }
+        const media = centeredItem.querySelectorAll('img, [style]');
+        for (const element of media) {
+            if (elementUsesAsset(element, collectSkinAssetUrls(goldenBorderSkin))) {
+                return false;
+            }
+        }
+        return centeredItem.classList.contains('skin-selection-item-selected');
+    }
+
     function tickSkinMonitor() {
         const name = readCurrentSkinName();
+        if (currentCenteredSkinLooksBase()) {
+            stopGoldenBorder();
+            if (lastSentSkinId !== null) {
+                lastSentSkinId = null;
+                sendBridgeMessage({ type: 'skin-hovered', skinId: null });
+            }
+            return;
+        }
         if (!name) {
+            stopGoldenBorder();
             if (lastSentSkinId !== null) {
                 lastSentSkinId = null;
                 sendBridgeMessage({ type: 'skin-hovered', skinId: null });
@@ -421,6 +718,16 @@
             // haven't indexed. Don't update `lastSentSkinId` so the
             // next tick retries once the map catches up.
             return;
+        }
+        const skin = skinIdToSkin.get(id);
+        if (id >= CUSTOM_ID_FLOOR) {
+            startGoldenBorder(id);
+        } else if (isLockedCarouselSkin(skin)) {
+            holdGoldenBorderOnLastCustom();
+        } else if (id % 1000 === 0) {
+            stopGoldenBorder();
+        } else {
+            holdGoldenBorderOnLastCustom();
         }
         if (id === lastSentSkinId) {
             return;
