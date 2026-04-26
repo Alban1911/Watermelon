@@ -87,36 +87,6 @@ pub fn deactivate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recovers from a previous run that exited without deactivating. The IFEO
-/// key is non-volatile, so a crash leaves Windows redirecting LeagueClientUx
-/// launches through a rundll32 hook that may now point at a missing dll.
-/// If the activation marker is present, clear the key (but only if it's
-/// still ours) and the marker.
-pub fn cleanup_if_dirty(core_dll_path: &Path, flag_path: &Path) {
-    if !flag_path.exists() {
-        return;
-    }
-
-    let key_is_ours = matches!(
-        ifeo::read_debugger_value(),
-        Ok(Some(ref v)) if is_ours(v, core_dll_path)
-    );
-
-    if key_is_ours {
-        eprintln!("[Pengu] Detected dirty state from previous run, clearing IFEO key");
-        if let Err(e) = ifeo::delete_key() {
-            eprintln!("[Pengu] Cleanup failed: {} — admin required?", e);
-            return;
-        }
-    } else {
-        eprintln!(
-            "[Pengu] Stale flag file from previous run, but IFEO is not ours — leaving key alone"
-        );
-    }
-
-    let _ = fs::remove_file(flag_path);
-}
-
 fn write_flag(flag_path: &Path) -> Result<()> {
     if let Some(parent) = flag_path.parent() {
         fs::create_dir_all(parent)?;

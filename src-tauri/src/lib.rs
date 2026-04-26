@@ -38,6 +38,7 @@ static HOVER_RUNTIME: OnceLock<Arc<overlay::HoverRuntime>> = OnceLock::new();
 static OVERLAY_DIR: OnceLock<PathBuf> = OnceLock::new();
 static LEAGUE_INSTALL_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static ASSET_WARMING: AtomicBool = AtomicBool::new(false);
+static INJECTION_SERVICES_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AppConfig {
@@ -129,9 +130,13 @@ fn set_saved_league_install_dir(path: Option<PathBuf>) {
 /// fails with "Port 1420 is already in use".
 fn cleanup_on_exit() {
     if let (Some(core_dll), Some(flag)) = (CORE_DLL_PATH.get(), FLAG_PATH.get()) {
-        match pengu::deactivate(core_dll, flag) {
-            Ok(()) => eprintln!("[Pengu] cleaned up on exit"),
-            Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+        if flag.exists() {
+            match pengu::deactivate(core_dll, flag) {
+                Ok(()) => eprintln!("[Pengu] cleaned up active hook on exit"),
+                Err(e) => eprintln!("[Pengu] cleanup on exit failed: {}", e),
+            }
+        } else {
+            eprintln!("[Pengu] hook inactive on exit; leaving LeagueClientUx alone");
         }
     }
     cleanup_overlay_session("exit");
@@ -178,14 +183,15 @@ fn spawn_detached_dev_cleanup() {
         "$core = {core}; \
          $flag = {flag}; \
          $subkey = 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\LeagueClientUx.exe'; \
-         try {{ \
+         $active = $flag -and (Test-Path -LiteralPath $flag); \
+         if ($active) {{ try {{ \
              $debugger = (Get-ItemProperty -Path $subkey -Name Debugger -ErrorAction SilentlyContinue).Debugger; \
              if ($debugger -and $debugger.ToLower().Contains($core.ToLower())) {{ \
                  Remove-Item -Path $subkey -Recurse -Force -ErrorAction SilentlyContinue; \
              }} \
          }} catch {{}}; \
-         try {{ if ($flag) {{ Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue; }} }} catch {{}}; \
-         try {{ Get-Process LeagueClientUx -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; }} catch {{}}",
+         try {{ Remove-Item -LiteralPath $flag -Force -ErrorAction SilentlyContinue; }} catch {{}}; \
+         try {{ Get-Process LeagueClientUx -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; }} catch {{}} }}",
         core = ps_single_quoted(&core_dll),
         flag = ps_single_quoted(&flag),
     );
@@ -268,6 +274,7 @@ fn regenerate_skin_index(app: &AppHandle) {
     };
     let skins = match library::scan(
         &paths.skins_dir,
+        &paths.skins_index_path,
         &paths.previews_dir,
         &paths.background_previews_dir,
         &paths.custom_background_previews_dir,
@@ -563,6 +570,7 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
     let state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     let skins = library::scan(
         &paths.skins_dir,
+        &paths.skins_index_path,
         &paths.previews_dir,
         &paths.background_previews_dir,
         &paths.custom_background_previews_dir,
@@ -882,7 +890,11 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let flag = pengu::flag_path(&data_dir);
-    pengu::activate(&core_dll, &flag).map_err(|e| e.to_string())
+    let _ = FLAG_PATH.set(flag.clone());
+    let _ = CORE_DLL_PATH.set(core_dll.clone());
+    pengu::activate(&core_dll, &flag).map_err(|e| e.to_string())?;
+    start_injection_services(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -898,6 +910,73 @@ fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
 fn pengu_status(app: AppHandle) -> Result<bool, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(pengu::flag_path(&data_dir).exists())
+}
+
+fn start_injection_services(app: &AppHandle) {
+    if INJECTION_SERVICES_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let resource_dir = match app.path().resource_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            eprintln!("[Inject] resource dir unavailable, injection disabled: {}", e);
+            return;
+        }
+    };
+    let cslol_dll = patcher::resolve_dll_path(&resource_dir);
+    if let Err(e) = patcher::load(&cslol_dll) {
+        eprintln!("[Patcher] load failed: {}", e);
+    }
+
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        lcu::run(handle).await;
+    });
+
+    match resolve_paths(app) {
+        Ok(paths) => {
+            if let Err(e) = std::fs::create_dir_all(&paths.overlay_dir) {
+                eprintln!(
+                    "[Overlay] create {} failed: {}",
+                    paths.overlay_dir.display(),
+                    e
+                );
+            }
+            if let Err(e) = overlay::runtime::clear_overlay_dir(&paths.overlay_dir) {
+                eprintln!(
+                    "[Overlay] startup cleanup {} failed: {}",
+                    paths.overlay_dir.display(),
+                    e
+                );
+            }
+            let overlay_dir = paths.overlay_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(e) = overlay::runtime::validate_map_cache_startup(&overlay_dir) {
+                    eprintln!("[Overlay] startup map-cache validation skipped: {}", e);
+                }
+            });
+            let _ = OVERLAY_DIR.set(paths.overlay_dir.clone());
+            let runtime = Arc::new(overlay::HoverRuntime::start(
+                app.clone(),
+                paths.skins_dir,
+                paths.skins_index_path,
+                paths.overlay_dir,
+            ));
+            let _ = HOVER_RUNTIME.set(runtime.clone());
+
+            let bridge_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                bridge::run(bridge_handle, runtime).await;
+            });
+        }
+        Err(e) => {
+            eprintln!(
+                "[Overlay] could not resolve app paths, hover injection disabled: {}",
+                e
+            );
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -941,28 +1020,7 @@ pub fn run() {
             }
 
             if !no_inject {
-                if let (Ok(data_dir), Ok(resource_dir)) =
-                    (app.path().app_data_dir(), app.path().resource_dir())
-                {
-                    let flag = pengu::flag_path(&data_dir);
-                    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
-                    let _ = FLAG_PATH.set(flag.clone());
-                    let _ = CORE_DLL_PATH.set(core_dll.clone());
-
-                    let cslol_dll = patcher::resolve_dll_path(&resource_dir);
-                    if let Err(e) = patcher::load(&cslol_dll) {
-                        eprintln!("[Patcher] load failed: {}", e);
-                    }
-
-                    pengu::cleanup_if_dirty(&core_dll, &flag);
-
-                    match pengu::activate(&core_dll, &flag) {
-                        Ok(()) => eprintln!("[Pengu] auto-activated on startup"),
-                        Err(e) => eprintln!("[Pengu] auto-activate failed: {}", e),
-                    }
-
-                    install_ctrlc_handler_for_mode();
-                }
+                install_ctrlc_handler_for_mode();
             } else {
                 eprintln!("[Pengu] --no-inject: skipping activation and LCU poller");
             }
@@ -985,65 +1043,6 @@ pub fn run() {
                 });
             }
 
-            if !no_inject {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn(async move {
-                    lcu::run(handle).await;
-                });
-
-                // Construct the hover runtime before the bridge so the
-                // bridge has a live Arc to forward hover events into on
-                // its very first client frame. If app-path resolution
-                // fails (effectively impossible on Windows), log and
-                // skip both the runtime and the bridge — the rest of
-                // the app keeps working, hover injection is simply off
-                // for this session.
-                match resolve_paths(&app.handle()) {
-                    Ok(paths) => {
-                        if let Err(e) = std::fs::create_dir_all(&paths.overlay_dir) {
-                            eprintln!(
-                                "[Overlay] create {} failed: {}",
-                                paths.overlay_dir.display(),
-                                e
-                            );
-                        }
-                        if let Err(e) = overlay::runtime::clear_overlay_dir(&paths.overlay_dir) {
-                            eprintln!(
-                                "[Overlay] startup cleanup {} failed: {}",
-                                paths.overlay_dir.display(),
-                                e
-                            );
-                        }
-                        let overlay_dir = paths.overlay_dir.clone();
-                        tauri::async_runtime::spawn_blocking(move || {
-                            if let Err(e) =
-                                overlay::runtime::validate_map_cache_startup(&overlay_dir)
-                            {
-                                eprintln!("[Overlay] startup map-cache validation skipped: {}", e);
-                            }
-                        });
-                        let _ = OVERLAY_DIR.set(paths.overlay_dir.clone());
-                        let runtime = Arc::new(overlay::HoverRuntime::start(
-                            app.handle().clone(),
-                            paths.skins_dir,
-                            paths.skins_index_path,
-                            paths.overlay_dir,
-                        ));
-                        let _ = HOVER_RUNTIME.set(runtime.clone());
-
-                        let bridge_handle = app.handle().clone();
-                        tauri::async_runtime::spawn(async move {
-                            bridge::run(bridge_handle, runtime).await;
-                        });
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "[Overlay] could not resolve app paths, hover injection disabled: {}",
-                            e
-                        );
-                    }
-                }
-            }
             spawn_asset_warmup(app.handle().clone());
             Ok(())
         })

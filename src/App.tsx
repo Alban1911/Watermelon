@@ -6,6 +6,7 @@ import {
   Loader2,
   MoreHorizontal,
   Moon,
+  Power,
   Plus,
   RotateCw,
   Settings,
@@ -44,6 +45,12 @@ type SkinLibrary = {
 type LeaguePathState = {
   path: string | null;
   isResolving: boolean;
+  error: string | null;
+};
+
+type HookState = {
+  active: boolean;
+  isLoading: boolean;
   error: string | null;
 };
 
@@ -87,6 +94,11 @@ function App() {
   const [leaguePath, setLeaguePath] = useState<LeaguePathState>({
     path: null,
     isResolving: true,
+    error: null,
+  });
+  const [hookState, setHookState] = useState<HookState>({
+    active: false,
+    isLoading: true,
     error: null,
   });
   const [isDragging, setIsDragging] = useState(false);
@@ -175,6 +187,15 @@ function App() {
     }
   }, []);
 
+  const refreshHookStatus = useCallback(async () => {
+    try {
+      const active = await invoke<boolean>("pengu_status");
+      setHookState({ active, isLoading: false, error: null });
+    } catch (e) {
+      setHookState({ active: false, isLoading: false, error: String(e) });
+    }
+  }, []);
+
   // Re-snapshot the sort order whenever the user changes what they're
   // looking at — view mode swap (flat ↔ grouped) or champion drill-in/out.
   // The library itself hasn't changed, so this is purely a re-sort: any
@@ -188,7 +209,8 @@ function App() {
 
   useEffect(() => {
     load();
-  }, [load]);
+    refreshHookStatus();
+  }, [load, refreshHookStatus]);
 
   const refreshLeaguePath = useCallback(async () => {
     setLeaguePath((cur) => ({ ...cur, isResolving: true, error: null }));
@@ -297,6 +319,17 @@ function App() {
       await invoke("open_skins_folder");
     } catch (e) {
       setError(String(e));
+    }
+  };
+
+  const setHookActive = async (active: boolean) => {
+    setHookState((cur) => ({ ...cur, isLoading: true, error: null }));
+    try {
+      await invoke(active ? "activate_pengu" : "deactivate_pengu");
+      setHookState({ active, isLoading: false, error: null });
+    } catch (e) {
+      setHookState((cur) => ({ ...cur, isLoading: false, error: String(e) }));
+      await refreshHookStatus();
     }
   };
 
@@ -452,6 +485,16 @@ function App() {
             </Button>
             <Button
               size="icon"
+              variant={hookState.active ? "default" : "outline"}
+              onClick={() => setHookActive(!hookState.active)}
+              disabled={hookState.isLoading}
+              aria-label={hookState.active ? "Disable League hook" : "Enable League hook"}
+              title={hookState.active ? "Disable League hook" : "Enable League hook"}
+            >
+              {hookState.isLoading ? <Loader2 className="animate-spin" /> : <Power />}
+            </Button>
+            <Button
+              size="icon"
               variant="ghost"
               onClick={() => setIsDark((v) => !v)}
               aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
@@ -475,6 +518,11 @@ function App() {
         {error && (
           <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
             {error}
+          </div>
+        )}
+        {hookState.error && (
+          <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {hookState.error}
           </div>
         )}
 
@@ -577,6 +625,8 @@ function App() {
       {settingsOpen && (
         <SettingsDialog
           leaguePath={leaguePath}
+          hookState={hookState}
+          onSetHookActive={setHookActive}
           onBrowseLeague={handlePickLeagueFolder}
           onDetectLeague={handleAutoDetectLeague}
           onClose={() => setSettingsOpen(false)}
@@ -644,11 +694,15 @@ function App() {
 
 function SettingsDialog({
   leaguePath,
+  hookState,
+  onSetHookActive,
   onBrowseLeague,
   onDetectLeague,
   onClose,
 }: {
   leaguePath: LeaguePathState;
+  hookState: HookState;
+  onSetHookActive: (active: boolean) => void | Promise<void>;
   onBrowseLeague: () => void;
   onDetectLeague: () => void;
   onClose: () => void;
@@ -681,6 +735,37 @@ function SettingsDialog({
         </div>
 
         <div className="space-y-5">
+          <section>
+            <div className="mb-2">
+              <h3 className="text-sm font-medium">League client hook</h3>
+              <p className="text-xs text-muted-foreground">
+                Enable the League client hook when you want Talon in champ select.
+              </p>
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-3">
+              <div>
+                <p className="text-sm font-medium">
+                  {hookState.active ? "Hook enabled" : "Hook disabled"}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {hookState.active
+                    ? "LeagueClientUx will relaunch through Talon."
+                    : "Talon will not hook the League client on launch."}
+                </p>
+                {hookState.error && (
+                  <p className="mt-2 text-xs text-destructive">
+                    {hookState.error}
+                  </p>
+                )}
+              </div>
+              <Switch
+                checked={hookState.active}
+                disabled={hookState.isLoading}
+                onCheckedChange={onSetHookActive}
+              />
+            </div>
+          </section>
+
           <section>
             <div className="mb-2">
               <h3 className="text-sm font-medium">League game path</h3>
