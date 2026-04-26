@@ -32,6 +32,9 @@
     const ANNOUNCE_PREFIX = 'riotPlugin.announce:';
     const TARGET_PLUGIN = 'rcp-fe-lol-champ-select';
     const CAROUSEL_CACHE_KEY = '/lol-champ-select/v1/skin-carousel-skins';
+    const CHAMP_SELECT_SESSION_ENDPOINT = '/lol-champ-select/v1/session';
+    const GAMEFLOW_ENDPOINT = '/lol-gameflow/v1/gameflow-phase';
+    const SELECTION_ENDPOINT = '/lol-champ-select/v1/session/my-selection';
     const TALON_INDEX_URL = 'https://talon/skins/all';
     const TALON_INDEX_VERSION_URL = 'https://talon/skins/version';
     const TALON_BACKGROUND_ASSET_BASE_URL = 'https://talon/assets/background/';
@@ -53,6 +56,8 @@
     const SKIN_MONITOR_POLL_MS = 250;
     const GOLDEN_BORDER_ENFORCE_MS = 50;
     const TALON_GOLDEN_STYLE_ID = 'talon-golden-border-style';
+    const FINALIZATION_DEFAULT_PATCH_BEFORE_MS = 400;
+    const FINALIZATION_INJECT_BEFORE_MS = 300;
 
     const pluginApis = {};
     window.__talonPluginApis = pluginApis;
@@ -81,6 +86,21 @@
     let goldenBorderSkin = null;
     let styledGoldenItem = null;
     let styledGoldenThumbnail = null;
+
+    // ── champ-select desync state ───────────────────────────────────
+    let desyncChampionId = null;
+    let defaultSkinPatchSent = false;
+    let patchBlockingEnabled = false;
+    let allowNextSelectionPatch = false;
+    let champSelectActive = false;
+    let finalSelectionKind = null;
+    let finalSelectionSkinId = null;
+    let lastLoggedCandidateKey = null;
+    let lastCustomSkinId = null;
+    let customOverlayPrepared = false;
+    let suppressBaseBackendClearUntil = 0;
+    let finalizationDefaultPatchTimer = null;
+    let finalizationInjectTimer = null;
 
     // ── RCP plugin API capture ───────────────────────────────────────
     const originalDispatchEvent = document.dispatchEvent.bind(document);
@@ -115,6 +135,10 @@
         }
         return originalDispatchEvent(event);
     };
+
+    hookDesyncFetch();
+    hookDesyncXhr();
+    hookDesyncWebSocket();
 
     function onChampSelectReady(api) {
         const parentCache = api && api.champSelectBinding && api.champSelectBinding.cache;
@@ -175,6 +199,373 @@
     // League client can leave the base skin visually selected. Mirror upstream's
     // fake selected frame by styling the centered carousel item while the
     // visible skin resolves to one of our custom IDs.
+    // ── Champ-select desync ─────────────────────────────────────────
+    function hookDesyncFetch() {
+        const originalFetch = window.fetch;
+        window.fetch = function (input, init) {
+            const url =
+                typeof input === 'string'
+                    ? input
+                    : input instanceof URL
+                      ? input.href
+                      : input && input.url;
+            const method = (init && init.method ? init.method : 'GET').toUpperCase();
+            if (
+                url &&
+                url.includes(SELECTION_ENDPOINT) &&
+                method === 'PATCH' &&
+                shouldBlockSelectionPatch(init && init.body)
+            ) {
+                log('desync blocked fetch selection PATCH');
+                return Promise.resolve(
+                    new Response(null, { status: 204, statusText: 'No Content' })
+                );
+            }
+            return originalFetch.call(this, input, init);
+        };
+    }
+
+    function hookDesyncXhr() {
+        const OriginalXHR = window.XMLHttpRequest;
+        const originalOpen = OriginalXHR.prototype.open;
+        const originalSend = OriginalXHR.prototype.send;
+
+        OriginalXHR.prototype.open = function (method, url) {
+            this.__talonMethod = typeof method === 'string' ? method.toUpperCase() : '';
+            this.__talonUrl = typeof url === 'string' ? url : String(url || '');
+            return originalOpen.apply(this, arguments);
+        };
+
+        OriginalXHR.prototype.send = function (body) {
+            if (
+                this.__talonUrl &&
+                this.__talonUrl.includes(SELECTION_ENDPOINT) &&
+                this.__talonMethod === 'PATCH' &&
+                shouldBlockSelectionPatch(body)
+            ) {
+                log('desync blocked XHR selection PATCH');
+                fakeXhrNoContent(this);
+                return;
+            }
+            return originalSend.apply(this, arguments);
+        };
+    }
+
+    function hookDesyncWebSocket() {
+        const OriginalWebSocket = window.WebSocket;
+
+        function TalonWebSocket(url, protocols) {
+            const socket =
+                protocols === undefined
+                    ? new OriginalWebSocket(url)
+                    : new OriginalWebSocket(url, protocols);
+
+            socket.addEventListener('message', (event) => {
+                processDesyncWsMessage(event.data);
+            });
+
+            return socket;
+        }
+
+        TalonWebSocket.prototype = OriginalWebSocket.prototype;
+        Object.setPrototypeOf(TalonWebSocket, OriginalWebSocket);
+        for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
+            try {
+                Object.defineProperty(TalonWebSocket, key, {
+                    value: OriginalWebSocket[key],
+                    configurable: true,
+                });
+            } catch (_) {}
+        }
+        window.WebSocket = TalonWebSocket;
+    }
+
+    function fakeXhrNoContent(xhr) {
+        setTimeout(() => {
+            try {
+                Object.defineProperty(xhr, 'readyState', { value: 4, configurable: true });
+                Object.defineProperty(xhr, 'status', { value: 204, configurable: true });
+                Object.defineProperty(xhr, 'statusText', {
+                    value: 'No Content',
+                    configurable: true,
+                });
+                Object.defineProperty(xhr, 'response', { value: null, configurable: true });
+                Object.defineProperty(xhr, 'responseText', { value: '', configurable: true });
+
+                const readystatechange = new Event('readystatechange');
+                const load = new ProgressEvent('load');
+                const loadend = new ProgressEvent('loadend');
+                xhr.dispatchEvent(readystatechange);
+                xhr.dispatchEvent(load);
+                xhr.dispatchEvent(loadend);
+                if (typeof xhr.onreadystatechange === 'function') {
+                    xhr.onreadystatechange(readystatechange);
+                }
+                if (typeof xhr.onload === 'function') {
+                    xhr.onload(load);
+                }
+                if (typeof xhr.onloadend === 'function') {
+                    xhr.onloadend(loadend);
+                }
+            } catch (e) {
+                log('desync fake XHR response failed:', e && e.message);
+            }
+        }, 0);
+    }
+
+    function shouldBlockSelectionPatch(body) {
+        const skinId = extractSelectedSkinId(body);
+        if (!skinId) {
+            return false;
+        }
+        if (allowNextSelectionPatch) {
+            allowNextSelectionPatch = false;
+            return false;
+        }
+        if (skinId >= CUSTOM_ID_FLOOR) {
+            setFinalSelection('custom', skinId);
+            return true;
+        }
+        if (skinId % 1000 !== 0) {
+            setFinalSelection('native', skinId);
+            if (patchBlockingEnabled) {
+                return true;
+            }
+        } else {
+            setFinalSelection('base', skinId);
+        }
+        return false;
+    }
+
+    function extractSelectedSkinId(body) {
+        try {
+            const data = typeof body === 'string' ? JSON.parse(body) : body;
+            const skinId = data && data.selectedSkinId;
+            return typeof skinId === 'number' ? skinId : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function processDesyncWsMessage(raw) {
+        if (
+            typeof raw !== 'string' ||
+            (!raw.includes('lol-champ-select') && !raw.includes('lol-gameflow'))
+        ) {
+            return;
+        }
+        let parsed;
+        try {
+            parsed = JSON.parse(raw);
+        } catch (_) {
+            return;
+        }
+        if (!Array.isArray(parsed) || parsed.length < 3) {
+            return;
+        }
+        const payload = parsed[2];
+        const uri = payload && payload.uri;
+        const data = payload && payload.data;
+        if (uri === CHAMP_SELECT_SESSION_ENDPOINT) {
+            handleChampSelectSession(data);
+        } else if (uri === GAMEFLOW_ENDPOINT) {
+            handleGameflowPhase(data);
+        }
+    }
+
+    function handleGameflowPhase(phase) {
+        champSelectActive = phase === 'ChampSelect';
+        if (
+            phase === 'None' ||
+            phase === 'Lobby' ||
+            phase === 'Matchmaking' ||
+            phase === 'ReadyCheck'
+        ) {
+            resetDesyncState();
+        }
+    }
+
+    function handleChampSelectSession(data) {
+        if (!data || typeof data !== 'object') {
+            return;
+        }
+
+        const localCell = data.localPlayerCellId;
+        const me =
+            Array.isArray(data.myTeam) &&
+            data.myTeam.find((player) => player && player.cellId === localCell);
+        const championId = me && me.championId;
+
+        if (typeof championId === 'number' && championId > 0) {
+            if (desyncChampionId !== championId) {
+                resetDesyncState();
+                desyncChampionId = championId;
+                defaultSkinPatchSent = true;
+                forceDefaultSkin(championId);
+                setTimeout(() => {
+                    if (desyncChampionId === championId) {
+                        patchBlockingEnabled = true;
+                        log('desync patch blocking enabled for champion', championId);
+                    }
+                }, 100);
+            } else if (!defaultSkinPatchSent) {
+                defaultSkinPatchSent = true;
+                forceDefaultSkin(championId);
+            }
+        }
+
+        const timer = data.timer;
+        if (timer && timer.phase === 'FINALIZATION') {
+            scheduleFinalization(timer.adjustedTimeLeftInPhase || 0);
+        }
+    }
+
+    function forceDefaultSkin(championId) {
+        const defaultSkinId = championId * 1000;
+        allowNextSelectionPatch = true;
+        // The forced default PATCH can briefly make the centered DOM look like
+        // a genuine base hover. Keep the visual cleanup, but do not clear the
+        // prepared overlay during this window.
+        suppressBaseBackendClearUntil = Date.now() + 1500;
+        log('desync forcing default skin', defaultSkinId);
+        fetch(SELECTION_ENDPOINT, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selectedSkinId: defaultSkinId }),
+        }).catch((e) => {
+            allowNextSelectionPatch = false;
+            log('desync default PATCH failed:', e && e.message);
+        });
+    }
+
+    function scheduleFinalization(remainingMs) {
+        if (finalizationDefaultPatchTimer !== null || finalizationInjectTimer !== null) {
+            return;
+        }
+        const championId = desyncChampionId;
+        if (!championId) {
+            return;
+        }
+
+        const defaultDelay = Math.max(0, remainingMs - FINALIZATION_DEFAULT_PATCH_BEFORE_MS);
+        const injectDelay = Math.max(0, remainingMs - FINALIZATION_INJECT_BEFORE_MS);
+
+        log(
+            'desync finalization remaining',
+            remainingMs,
+            'defaultPatchDelay',
+            defaultDelay,
+            'injectDelay',
+            injectDelay
+        );
+
+        finalizationDefaultPatchTimer = setTimeout(() => {
+            finalizationDefaultPatchTimer = null;
+            if (desyncChampionId === championId) {
+                applyFinalSelection(championId);
+            }
+        }, defaultDelay);
+
+        finalizationInjectTimer = setTimeout(() => {
+            finalizationInjectTimer = null;
+            if (finalSelectionKind === 'custom' && finalSelectionSkinId !== null) {
+                log('desync final custom inject', finalSelectionSkinId);
+                customOverlayPrepared = true;
+                sendBridgeMessage({ type: 'skin-hovered', skinId: finalSelectionSkinId });
+            }
+        }, injectDelay);
+    }
+
+    function applyFinalSelection(championId) {
+        if (finalSelectionKind === 'native' && finalSelectionSkinId !== null) {
+            log('desync final native PATCH', finalSelectionSkinId);
+            clearPreparedCustomSkin();
+            allowNextSelectionPatch = true;
+            fetch(SELECTION_ENDPOINT, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ selectedSkinId: finalSelectionSkinId }),
+            }).catch((e) => {
+                allowNextSelectionPatch = false;
+                log('desync native final PATCH failed:', e && e.message);
+            });
+            return;
+        }
+
+        if (finalSelectionKind !== 'custom') {
+            clearPreparedCustomSkin();
+        }
+        forceDefaultSkin(championId);
+    }
+
+    function clearFinalizationTimers() {
+        if (finalizationDefaultPatchTimer !== null) {
+            clearTimeout(finalizationDefaultPatchTimer);
+            finalizationDefaultPatchTimer = null;
+        }
+        if (finalizationInjectTimer !== null) {
+            clearTimeout(finalizationInjectTimer);
+            finalizationInjectTimer = null;
+        }
+    }
+
+    function clearPreparedCustomSkin() {
+        if (lastCustomSkinId === null) {
+            return;
+        }
+        lastCustomSkinId = null;
+        if (customOverlayPrepared) {
+            customOverlayPrepared = false;
+            sendBridgeMessage({ type: 'skin-cleared' });
+        }
+    }
+
+    function setFinalSelection(kind, skinId) {
+        finalSelectionKind = kind;
+        finalSelectionSkinId = skinId;
+        logDesyncCandidate(kind, skinId);
+        if (kind === 'custom') {
+            lastCustomSkinId = skinId;
+        } else if (kind === 'native' || kind === 'base') {
+            clearPreparedCustomSkin();
+        }
+    }
+
+    function logDesyncCandidate(kind, skinId) {
+        const key = `${kind}:${skinId ?? 'null'}`;
+        if (key === lastLoggedCandidateKey) {
+            return;
+        }
+        lastLoggedCandidateKey = key;
+        let label = kind;
+        if (kind === 'custom') {
+            label = 'custom talon';
+        } else if (kind === 'native') {
+            label = 'owned official';
+        } else if (kind === 'locked') {
+            label = 'unowned official';
+        } else if (kind === 'base') {
+            label = 'base';
+        }
+        const message = `desync hovered skin: ${skinId} (${label})`;
+        log(message);
+        sendBridgeMessage({ type: 'log', message });
+    }
+
+    function resetDesyncState() {
+        clearFinalizationTimers();
+        clearPreparedCustomSkin();
+        desyncChampionId = null;
+        defaultSkinPatchSent = false;
+        patchBlockingEnabled = false;
+        allowNextSelectionPatch = false;
+        finalSelectionKind = null;
+        finalSelectionSkinId = null;
+        lastLoggedCandidateKey = null;
+        customOverlayPrepared = false;
+        suppressBaseBackendClearUntil = 0;
+    }
+
     function injectGoldenBorderStyle() {
         if (document.getElementById(TALON_GOLDEN_STYLE_ID)) {
             return;
@@ -695,14 +1086,6 @@
 
     function tickSkinMonitor() {
         const name = readCurrentSkinName();
-        if (currentCenteredSkinLooksBase()) {
-            stopGoldenBorder();
-            if (lastSentSkinId !== null) {
-                lastSentSkinId = null;
-                sendBridgeMessage({ type: 'skin-hovered', skinId: null });
-            }
-            return;
-        }
         if (!name) {
             stopGoldenBorder();
             if (lastSentSkinId !== null) {
@@ -720,19 +1103,40 @@
             return;
         }
         const skin = skinIdToSkin.get(id);
+        if (currentCenteredSkinLooksBase() && id % 1000 === 0) {
+            const suppressBackendClear = Date.now() < suppressBaseBackendClearUntil;
+            stopGoldenBorder();
+            if (!suppressBackendClear) {
+                setFinalSelection('base', id);
+            }
+            if (lastSentSkinId !== null && !suppressBackendClear) {
+                lastSentSkinId = null;
+                if (!champSelectActive) {
+                    sendBridgeMessage({ type: 'skin-cleared' });
+                }
+            }
+            return;
+        }
         if (id >= CUSTOM_ID_FLOOR) {
+            setFinalSelection('custom', id);
             startGoldenBorder(id);
         } else if (isLockedCarouselSkin(skin)) {
+            logDesyncCandidate('locked', id);
             holdGoldenBorderOnLastCustom();
         } else if (id % 1000 === 0) {
+            setFinalSelection('base', id);
             stopGoldenBorder();
         } else {
-            holdGoldenBorderOnLastCustom();
+            setFinalSelection('native', id);
+            startGoldenBorder(id);
         }
         if (id === lastSentSkinId) {
             return;
         }
         lastSentSkinId = id;
+        if (champSelectActive) {
+            return;
+        }
         sendBridgeMessage({ type: 'skin-hovered', skinId: id });
     }
 

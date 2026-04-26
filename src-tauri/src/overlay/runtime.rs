@@ -111,6 +111,16 @@ impl HoverRuntime {
             eprintln!("[Inject] coalesced — replacing pending request");
         }
     }
+
+    /// Explicit user-driven clear, separate from `handle_hover(None)` because
+    /// the client also emits null-ish hover states during game launch, when
+    /// the prepared overlay must stay on disk.
+    pub fn clear(&self) {
+        eprintln!("[Inject] explicit clear -> queue clear");
+        let mut latest = self.inner.latest.lock().expect("hover runtime latest lock poisoned");
+        *latest = Some(HoverRequest::Clear);
+        self.inner.wake.notify_one();
+    }
 }
 
 impl Inner {

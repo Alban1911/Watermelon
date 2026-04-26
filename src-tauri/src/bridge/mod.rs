@@ -94,6 +94,16 @@ async fn serve_client(
                 }
                 _ => {}
             },
+            "skin-cleared" => {
+                eprintln!("[Bridge] skin explicitly cleared");
+                let _ = app.emit("lcu:skin-hovered", Value::Null);
+                runtime.clear();
+            }
+            "log" => {
+                if let Some(message) = parsed.get("message").and_then(|v| v.as_str()) {
+                    eprintln!("[Plugin] {}", message);
+                }
+            }
             _ => {}
         }
     }
