@@ -61,6 +61,15 @@ struct IndexEntry {
     /// File stem of the backing `.fantome`. Reserved for later click
     /// handling that needs to look the real skin file up again.
     file_stem: String,
+    /// Official skin slots this mod patches, derived from `skinN.bin`
+    /// entries inside the mod WAD. The preload uses this to select a
+    /// compatible Riot skin instead of always forcing base skin.
+    injects_on: Vec<u32>,
+    /// Source `.fantome` fingerprint used by Rust to reuse `injectsOn`
+    /// from this index until the backing file changes.
+    source_file_len: u64,
+    source_file_mtime_ns: u128,
+    source_champion: String,
 }
 
 /// Best-effort mtime lookup — returns seconds since the Unix epoch, or 0
@@ -115,6 +124,10 @@ pub fn regenerate(
             background_version: file_version(skin.background_preview.as_deref()),
             tile_version: file_version(skin.tile_preview.as_deref()),
             file_stem: skin.id.clone(),
+            injects_on: skin.injects_on.clone(),
+            source_file_len: skin.source_file_len,
+            source_file_mtime_ns: skin.source_file_mtime_ns,
+            source_champion: skin.champion.clone(),
         });
     }
 

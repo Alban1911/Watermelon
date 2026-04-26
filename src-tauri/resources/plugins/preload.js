@@ -89,12 +89,12 @@
 
     // ── champ-select desync state ───────────────────────────────────
     let desyncChampionId = null;
-    let defaultSkinPatchSent = false;
     let patchBlockingEnabled = false;
     let allowNextSelectionPatch = false;
     let champSelectActive = false;
     let finalSelectionKind = null;
     let finalSelectionSkinId = null;
+    let actualOfficialSelectedSkinId = null;
     let lastLoggedCandidateKey = null;
     let lastCustomSkinId = null;
     let customOverlayPrepared = false;
@@ -320,6 +320,7 @@
         }
         if (allowNextSelectionPatch) {
             allowNextSelectionPatch = false;
+            rememberActualOfficialSelection(skinId, 'allowed patch');
             return false;
         }
         if (skinId >= CUSTOM_ID_FLOOR) {
@@ -331,8 +332,10 @@
             if (patchBlockingEnabled) {
                 return true;
             }
+            rememberActualOfficialSelection(skinId, 'client patch');
         } else {
             setFinalSelection('base', skinId);
+            rememberActualOfficialSelection(skinId, 'client patch');
         }
         return false;
     }
@@ -395,23 +398,20 @@
             Array.isArray(data.myTeam) &&
             data.myTeam.find((player) => player && player.cellId === localCell);
         const championId = me && me.championId;
+        const selectedSkinId = me && me.selectedSkinId;
 
         if (typeof championId === 'number' && championId > 0) {
             if (desyncChampionId !== championId) {
                 resetDesyncState();
                 desyncChampionId = championId;
-                defaultSkinPatchSent = true;
-                forceDefaultSkin(championId);
                 setTimeout(() => {
                     if (desyncChampionId === championId) {
                         patchBlockingEnabled = true;
                         log('desync patch blocking enabled for champion', championId);
                     }
                 }, 100);
-            } else if (!defaultSkinPatchSent) {
-                defaultSkinPatchSent = true;
-                forceDefaultSkin(championId);
             }
+            rememberActualOfficialSelection(selectedSkinId, 'champ-select session');
         }
 
         const timer = data.timer;
@@ -420,21 +420,20 @@
         }
     }
 
-    function forceDefaultSkin(championId) {
-        const defaultSkinId = championId * 1000;
+    function patchSelectedSkin(skinId, reason) {
         allowNextSelectionPatch = true;
-        // The forced default PATCH can briefly make the centered DOM look like
-        // a genuine base hover. Keep the visual cleanup, but do not clear the
-        // prepared overlay during this window.
+        // The forced official PATCH can briefly make the centered DOM look like
+        // a genuine official hover. Keep the visual cleanup, but do not clear
+        // the prepared overlay during this window.
         suppressBaseBackendClearUntil = Date.now() + 1500;
-        log('desync forcing default skin', defaultSkinId);
+        log('desync forcing official skin', skinId, reason || '');
         fetch(SELECTION_ENDPOINT, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ selectedSkinId: defaultSkinId }),
+            body: JSON.stringify({ selectedSkinId: skinId }),
         }).catch((e) => {
             allowNextSelectionPatch = false;
-            log('desync default PATCH failed:', e && e.message);
+            log('desync official PATCH failed:', e && e.message);
         });
     }
 
@@ -494,8 +493,88 @@
 
         if (finalSelectionKind !== 'custom') {
             clearPreparedCustomSkin();
+            patchSelectedSkin(championId * 1000, 'fallback base');
+            return;
         }
-        forceDefaultSkin(championId);
+        applyCustomOfficialSelection(championId, finalSelectionSkinId);
+    }
+
+    function applyCustomOfficialSelection(championId, customSkinId) {
+        const entry = findTalonSkinEntry(championId, customSkinId);
+        const injectsOn = normalizeInjectsOn(entry && entry.injectsOn);
+        const selectedSkinNum =
+            actualOfficialSelectedSkinId !== null &&
+            Math.floor(actualOfficialSelectedSkinId / 1000) === championId
+                ? actualOfficialSelectedSkinId % 1000
+                : null;
+
+        log(
+            'desync custom target decision',
+            'customSkinId',
+            customSkinId,
+            'fileStem',
+            entry && entry.fileStem,
+            'injectsOn',
+            injectsOn,
+            'actualOfficialSelectedSkinId',
+            actualOfficialSelectedSkinId,
+            'selectedSkinNum',
+            selectedSkinNum
+        );
+        sendBridgeMessage({
+            type: 'log',
+            message:
+                `desync custom target decision: talon=${customSkinId}` +
+                ` file=${(entry && entry.fileStem) || 'unknown'}` +
+                ` injectsOn=${summarizeInjectsOn(injectsOn)}` +
+                ` actualOfficial=${actualOfficialSelectedSkinId ?? 'none'}` +
+                ` selectedSkinNum=${selectedSkinNum ?? 'none'}`,
+        });
+
+        if (selectedSkinNum !== null && injectsOn.includes(selectedSkinNum)) {
+            log('desync keeping compatible official skin', actualOfficialSelectedSkinId);
+            sendBridgeMessage({
+                type: 'log',
+                message: `desync custom target: keeping official skin ${actualOfficialSelectedSkinId} for Talon skin ${customSkinId}`,
+            });
+            return;
+        }
+
+        const targetSkinNum = Math.min(...injectsOn);
+        sendBridgeMessage({
+            type: 'log',
+            message: `desync custom target: forcing skin${targetSkinNum} for Talon skin ${customSkinId}`,
+        });
+        patchSelectedSkin(
+            championId * 1000 + targetSkinNum,
+            `custom target skin${targetSkinNum}`
+        );
+    }
+
+    function findTalonSkinEntry(championId, customSkinId) {
+        const entries = (window.__talonSkinIndex || {})[String(championId)] || [];
+        return entries.find((entry) => entry && entry.id === customSkinId) || null;
+    }
+
+    function normalizeInjectsOn(value) {
+        const slots = Array.isArray(value)
+            ? value
+                  .filter((n) => Number.isInteger(n) && n >= 0)
+                  .sort((a, b) => a - b)
+            : [];
+        return slots.length > 0 ? Array.from(new Set(slots)) : [0];
+    }
+
+    function summarizeInjectsOn(injectsOn) {
+        if (!Array.isArray(injectsOn) || injectsOn.length === 0) {
+            return '[0]';
+        }
+        if (injectsOn.length <= 12) {
+            return `[${injectsOn.join(',')}]`;
+        }
+        return `[${injectsOn.slice(0, 8).join(',')},...,${
+            injectsOn[injectsOn.length - 1]
+        }](${injectsOn.length})`;
     }
 
     function clearFinalizationTimers() {
@@ -531,6 +610,32 @@
         }
     }
 
+    function rememberActualOfficialSelection(skinId, source) {
+        if (typeof skinId !== 'number' || skinId >= CUSTOM_ID_FLOOR) {
+            return;
+        }
+        const skin = skinIdToSkin.get(skinId);
+        if (skin && isLockedCarouselSkin(skin)) {
+            log('desync ignored locked backend official skin', skinId, source || '');
+            return;
+        }
+        if (actualOfficialSelectedSkinId === skinId) {
+            return;
+        }
+        actualOfficialSelectedSkinId = skinId;
+        log(
+            'desync actual official selected skin',
+            skinId,
+            'skinNum',
+            skinId % 1000,
+            source || ''
+        );
+        sendBridgeMessage({
+            type: 'log',
+            message: `desync actual official selected: ${skinId} (skin${skinId % 1000})`,
+        });
+    }
+
     function logDesyncCandidate(kind, skinId) {
         const key = `${kind}:${skinId ?? 'null'}`;
         if (key === lastLoggedCandidateKey) {
@@ -556,11 +661,11 @@
         clearFinalizationTimers();
         clearPreparedCustomSkin();
         desyncChampionId = null;
-        defaultSkinPatchSent = false;
         patchBlockingEnabled = false;
         allowNextSelectionPatch = false;
         finalSelectionKind = null;
         finalSelectionSkinId = null;
+        actualOfficialSelectedSkinId = null;
         lastLoggedCandidateKey = null;
         customOverlayPrepared = false;
         suppressBaseBackendClearUntil = 0;
@@ -1038,9 +1143,9 @@
     // Reads the currently-displayed skin name from the carousel UI.
     // The carousel keeps many `.skin-name-text` nodes in the DOM at once
     // (one per slot); only the active slot is visible. Iterate all matches
-    // and prefer a visible one (`offsetParent !== null`), falling back to
-    // the last non-empty candidate so we still report something before
-    // the carousel has fully laid out.
+    // and only trust visible nodes (`offsetParent !== null`). Hidden
+    // carousel slots can retain stale base/native names during desync and
+    // should not drive hover state.
     function readCurrentSkinName() {
         for (const selector of SKIN_NAME_SELECTORS) {
             const nodes = document.querySelectorAll(selector);
@@ -1050,8 +1155,6 @@
                 const name = (node.textContent || '').trim();
                 if (!name) return;
                 if (node.offsetParent !== null) {
-                    candidate = name;
-                } else if (!candidate) {
                     candidate = name;
                 }
             });
@@ -1106,9 +1209,6 @@
         if (currentCenteredSkinLooksBase() && id % 1000 === 0) {
             const suppressBackendClear = Date.now() < suppressBaseBackendClearUntil;
             stopGoldenBorder();
-            if (!suppressBackendClear) {
-                setFinalSelection('base', id);
-            }
             if (lastSentSkinId !== null && !suppressBackendClear) {
                 lastSentSkinId = null;
                 if (!champSelectActive) {

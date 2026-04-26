@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use super::fantome;
+use super::injection;
 use super::preview;
 use super::state::SkinState;
 
@@ -26,6 +27,9 @@ pub struct SkinEntry {
     /// Same, but for the composed background asset.
     pub background_preview_custom: bool,
     pub champion_icon: Option<String>,
+    pub injects_on: Vec<u32>,
+    pub source_file_len: u64,
+    pub source_file_mtime_ns: u128,
     pub enabled: bool,
 }
 
@@ -46,6 +50,7 @@ pub struct SkinLibrary {
 /// still loads.
 pub fn scan(
     skins_dir: &Path,
+    skins_index_path: &Path,
     previews_dir: &Path,
     background_previews_dir: &Path,
     custom_background_previews_dir: &Path,
@@ -61,6 +66,7 @@ pub fn scan(
     // Per-scan cache so we fetch each champion's icon at most once even if
     // multiple skins share the champion.
     let mut icon_cache: HashMap<String, Option<String>> = HashMap::new();
+    let previous_index = injection::PreviousInjectsOnIndex::load(skins_index_path);
 
     let mut entries = Vec::new();
     for dir_entry in fs::read_dir(skins_dir).context("reading skins directory")? {
@@ -75,6 +81,7 @@ pub fn scan(
             Some(s) => s.to_string(),
             None => continue,
         };
+        let fingerprint = injection::FileFingerprint::read(&path)?;
 
         let meta = fantome::read(&path).ok();
         let name = meta
@@ -129,6 +136,21 @@ pub fn scan(
                     .map(|p| p.to_string_lossy().into_owned())
             })
             .clone();
+        let enabled = state.is_enabled(&stem);
+        let injects_on = if enabled {
+            previous_index
+                .get_or_detect(&stem, &path, &champion)
+                .unwrap_or_else(|e| {
+                    eprintln!(
+                        "[SkinIndex] could not detect inject targets for {}: {}; falling back to skin0",
+                        path.display(),
+                        e
+                    );
+                    vec![0]
+                })
+        } else {
+            vec![0]
+        };
 
         entries.push(SkinEntry {
             id: stem.clone(),
@@ -143,7 +165,10 @@ pub fn scan(
             tile_preview_custom,
             background_preview_custom,
             champion_icon,
-            enabled: state.is_enabled(&stem),
+            injects_on,
+            source_file_len: fingerprint.len,
+            source_file_mtime_ns: fingerprint.mtime_ns,
+            enabled,
         });
     }
 
