@@ -220,7 +220,7 @@ static int Hooked_CefInitialize(const struct _cef_main_args_t* args,
 
 void HookBrowserProcess()
 {
-    OutputDebugStringA("[Watermelon] HookBrowserProcess");
+    logutil::write("[Watermelon] HookBrowserProcess");
 
     // Hook CefInitialize().
     CefInitialize.hook(LIBCEF_MODULE_NAME,
@@ -234,5 +234,6 @@ void HookBrowserProcess()
     CefRequestContext_CreateContext.hook(LIBCEF_MODULE_NAME,
         "cef_request_context_create_context", Hooked_CefRequestContext_CreateContext);
 
-    OutputDebugStringA("[Watermelon] Browser hooks installed");
+    logutil::write("[Watermelon] Browser hooks installed");
 }
+

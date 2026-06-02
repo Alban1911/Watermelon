@@ -3,6 +3,16 @@
 #include <unordered_map>
 #include "include/cef_version.h"
 
+path config::appdata_dir()
+{
+    wchar_t appdata[2048];
+    size_t length = GetEnvironmentVariableW(L"APPDATA", appdata, COUNT_OF(appdata));
+    if (length == 0)
+        return loader_dir();
+
+    return path(appdata) / "Watermelon";
+}
+
 path config::loader_dir()
 {
     static std::wstring dir_path;

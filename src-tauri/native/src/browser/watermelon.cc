@@ -228,7 +228,11 @@ private:
         std::u16string full((char16_t *)url.str, url.length);
 
         // Strip "https://watermelon" prefix (18 chars) to get the path.
-        std::u16string path = (full.length() > 13) ? full.substr(13) : std::u16string();
+        static constexpr size_t WATERMELON_PREFIX_LEN = 18;
+        std::u16string path =
+            (full.length() > WATERMELON_PREFIX_LEN)
+                ? full.substr(WATERMELON_PREFIX_LEN)
+                : std::u16string();
 
         // Trim query string.
         size_t q = path.find(u'?');

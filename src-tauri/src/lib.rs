@@ -1,3 +1,73 @@
+mod app_log {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+    fn default_log_path() -> PathBuf {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            return PathBuf::from(appdata)
+                .join("Watermelon")
+                .join("logs")
+                .join("watermelon.log");
+        }
+
+        PathBuf::from("watermelon.log")
+    }
+
+    pub fn init() {
+        let path = LOG_PATH.get_or_init(default_log_path);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        std::panic::set_hook(Box::new(|panic_info| {
+            let location = panic_info
+                .location()
+                .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+                .unwrap_or_else(|| "<unknown>".to_string());
+            let payload = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                *s
+            } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+                s.as_str()
+            } else {
+                "<non-string panic>"
+            };
+            write_line(&format!("[Panic] {payload} @ {location}"));
+            ::std::eprintln!("[Panic] {payload} @ {location}");
+        }));
+
+        write_line(&format!("[App] logging initialized at {}", path.display()));
+    }
+
+    pub fn write_line(message: &str) {
+        let path = LOG_PATH.get_or_init(default_log_path);
+        if let Some(parent) = path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let line = format!("[{}.{:03}] {}\n", ts.as_secs(), ts.subsec_millis(), message);
+
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = file.write_all(line.as_bytes());
+        }
+    }
+}
+
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        crate::app_log::write_line(&message);
+        ::std::eprintln!("{}", message);
+    }};
+}
+
 mod bridge;
 mod data_dragon;
 mod lcu;
@@ -14,6 +84,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_opener::OpenerExt;
+use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+use windows_sys::Win32::System::Threading::CreateMutexW;
 
 /// Path of the activation marker file. Stored here so the Ctrl+C handler
 /// (which runs on a separate thread without an `AppHandle`) and the Tauri
@@ -39,6 +111,7 @@ static OVERLAY_DIR: OnceLock<PathBuf> = OnceLock::new();
 static LEAGUE_INSTALL_DIR: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
 static ASSET_WARMING: AtomicBool = AtomicBool::new(false);
 static INJECTION_SERVICES_STARTED: AtomicBool = AtomicBool::new(false);
+static SINGLE_INSTANCE_MUTEX: OnceLock<usize> = OnceLock::new();
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AppConfig {
@@ -55,6 +128,31 @@ struct CslolDllStatus {
 
 fn league_install_dir_cell() -> &'static Mutex<Option<PathBuf>> {
     LEAGUE_INSTALL_DIR.get_or_init(|| Mutex::new(None))
+}
+
+fn acquire_single_instance() -> Result<bool, String> {
+    let mut name: Vec<u16> = "Local\\WatermelonSingleInstanceMutex"
+        .encode_utf16()
+        .collect();
+    name.push(0);
+
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    if handle.is_null() {
+        return Err(format!(
+            "CreateMutexW failed with error {}",
+            unsafe { GetLastError() }
+        ));
+    }
+
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe {
+            CloseHandle(handle);
+        }
+        return Ok(false);
+    }
+
+    let _ = SINGLE_INSTANCE_MUTEX.set(handle as usize);
+    Ok(true)
 }
 
 pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
@@ -1146,6 +1244,17 @@ fn start_injection_services(app: &AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    app_log::init();
+    match acquire_single_instance() {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("[App] another Watermelon instance is already running; exiting");
+            return;
+        }
+        Err(e) => {
+            eprintln!("[App] single-instance guard failed: {}", e);
+        }
+    }
     let no_inject = std::env::args().any(|a| a == "--no-inject");
 
     tauri::Builder::default()

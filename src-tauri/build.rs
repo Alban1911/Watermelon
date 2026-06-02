@@ -6,12 +6,21 @@ use std::time::SystemTime;
 fn main() {
     println!("cargo:rerun-if-env-changed=DEBUG");
     println!("cargo:rerun-if-changed=resources/plugins/preload.js");
+    println!("cargo:rerun-if-changed=windows/app.manifest");
 
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         build_core_dll();
     }
 
-    tauri_build::build();
+    let attrs = if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        let windows = tauri_build::WindowsAttributes::new()
+            .app_manifest(include_str!("windows/app.manifest"));
+        tauri_build::Attributes::new().windows_attributes(windows)
+    } else {
+        tauri_build::Attributes::new()
+    };
+
+    tauri_build::try_build(attrs).expect("failed to run tauri build script");
 }
 
 const SOURCES: &[&str] = &[
@@ -23,6 +32,7 @@ const SOURCES: &[&str] = &[
     "browser/watermelon.cc",
     "renderer/renderer.cc",
     "renderer/v8_helper.cc",
+    "utils/log.cc",
     "utils/dylib.cc",
     "utils/cefstr.cc",
     "utils/file.cc",

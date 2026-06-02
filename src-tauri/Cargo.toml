@@ -1,6 +1,6 @@
 [package]
 name = "watermelon"
-version = "0.1.0"
+version = "1.0.0"
 description = "Windows desktop app for managing custom League of Legends skins."
 edition = "2021"
 

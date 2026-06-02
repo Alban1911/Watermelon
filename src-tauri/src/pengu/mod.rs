@@ -59,7 +59,7 @@ pub fn resume_if_active(core_dll_path: &Path, flag_path: &Path) -> Result<bool> 
 ///
 /// Before writing, the current IFEO value is read. If it's already set by
 /// another tool (a non-Watermelon `core.dll` path), activation is skipped and
-/// the existing value is left alone — Watermelon will run without injection
+/// the existing value is left alone - Watermelon will run without injection
 /// this session rather than stomping on the other tool's state.
 pub fn activate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     if !core_dll_path.exists() {
@@ -93,14 +93,14 @@ pub fn resolve_core_dll_path<P: AsRef<Path>>(resource_dir: P) -> PathBuf {
 /// Deactivates IFEO injection. Removes the registry key and kills any
 /// running LeagueClientUx **only if** the key still references our own
 /// core.dll. If another tool has taken over the IFEO slot in the
-/// meantime, its state is preserved — we just delete our activation
+/// meantime, its state is preserved - we just delete our activation
 /// marker and return.
 pub fn deactivate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     if key_is_ours(core_dll_path) {
         ifeo::delete_key().context("deleting IFEO registry key")?;
         process::terminate_league_client_ux();
     } else {
-        eprintln!("[Pengu] IFEO Debugger is not ours — leaving it alone");
+        eprintln!("[Pengu] IFEO Debugger is not ours - leaving it alone");
     }
 
     let _ = fs::remove_file(flag_path);

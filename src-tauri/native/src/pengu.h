@@ -190,6 +190,7 @@ static inline cef_string_t operator""_s(const char16_t *s, size_t l)
 
 namespace config
 {
+    path appdata_dir();
     path loader_dir();
     path datastore_path();
     path cache_dir();
@@ -222,6 +223,11 @@ namespace dialog
         MessageBoxA(NULL, message, caption,
             MB_ICONINFORMATION | MB_OK | MB_TOPMOST);
     }
+}
+
+namespace logutil
+{
+    void write(const char *message);
 }
 
 namespace dylib

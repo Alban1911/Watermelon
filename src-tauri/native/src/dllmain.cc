@@ -56,12 +56,12 @@ static void Initialize()
     // Browser process.
     if (wcsfindi(exe_path, L"LeagueClientUx.exe"))
     {
-        OutputDebugStringA("[Watermelon] Browser process detected");
+        logutil::write("[Watermelon] Browser process detected");
         if (check_libcef_version(true))
         {
             HookBrowserProcess();
             Old_CreateProcessW.hook(&CreateProcessW, Hooked_CreateProcessW);
-            OutputDebugStringA("[Watermelon] CreateProcessW hooked");
+            logutil::write("[Watermelon] CreateProcessW hooked");
         }
     }
     // Render process.
@@ -69,11 +69,11 @@ static void Initialize()
     {
         if (wcsstr(GetCommandLineW(), L"--type=renderer") != nullptr)
         {
-            OutputDebugStringA("[Watermelon] Renderer process detected");
+            logutil::write("[Watermelon] Renderer process detected");
             if (check_libcef_version(false))
             {
                 HookRendererProcess();
-                OutputDebugStringA("[Watermelon] Renderer hooks installed");
+                logutil::write("[Watermelon] Renderer hooks installed");
             }
         }
     }
@@ -87,7 +87,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         case DLL_PROCESS_ATTACH:
             g_hModule = module;
             DisableThreadLibraryCalls(module);
-            OutputDebugStringA("[Watermelon] DllMain: DLL_PROCESS_ATTACH");
+            logutil::write("[Watermelon] DllMain: DLL_PROCESS_ATTACH");
             Initialize();
             break;
 
@@ -125,7 +125,7 @@ extern "C" __declspec(dllexport) int APIENTRY _BootstrapEntryW(HWND, HINSTANCE, 
     LONG (NTAPI *NtRemoveProcessDebug)(HANDLE, HANDLE);
     LONG (NTAPI *NtClose)(HANDLE Handle);
 
-    OutputDebugStringA("[Watermelon] _BootstrapEntry called");
+    logutil::write("[Watermelon] _BootstrapEntry called");
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -166,3 +166,4 @@ extern "C" __declspec(dllexport) int _GetCefVersion()
 {
     return CEF_VERSION_MAJOR;
 }
+
