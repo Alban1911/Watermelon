@@ -73,7 +73,7 @@ fn cslol_dll_dir_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn cslol_dll_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(cslol_dll_dir_path(app)?.join("runtime-hook.dll"))
+    Ok(cslol_dll_dir_path(app)?.join("cslol-dll.dll"))
 }
 
 fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
@@ -248,7 +248,7 @@ cache/
 cslol-installed/               Legacy/generated cslol install cache.
 
 cslol-tools/
-  runtime-hook.dll             User-supplied runtime hook DLL.
+  cslol-dll.dll                User-supplied runtime hook DLL.
 
 runtime/
   overlay/                       Temporary game overlay files.
@@ -929,7 +929,7 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
     let cslol_dll = cslol_dll_path(&app)?;
     if !cslol_dll.is_file() {
         return Err(format!(
-            "Missing runtime-hook.dll at {}. Open the cslol-tools folder from setup and add the file first.",
+            "Missing cslol-dll.dll at {}. Open the cslol-tools folder from setup and add the file first.",
             path_to_user_string(&cslol_dll)
         ));
     }

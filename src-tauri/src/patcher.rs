@@ -59,7 +59,7 @@ mod imp {
     pub fn resolve_dll_path(app_data_dir: &Path) -> PathBuf {
         app_data_dir
             .join("cslol-tools")
-            .join("runtime-hook.dll")
+            .join("cslol-dll.dll")
     }
 
     pub fn load(dll_path: &Path) -> Result<()> {
@@ -295,7 +295,7 @@ mod imp {
     pub fn resolve_dll_path(app_data_dir: &Path) -> PathBuf {
         app_data_dir
             .join("cslol-tools")
-            .join("runtime-hook.dll")
+            .join("cslol-dll.dll")
     }
 
     pub fn load(_dll_path: &Path) -> Result<()> {
