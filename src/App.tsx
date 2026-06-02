@@ -570,7 +570,7 @@ function App() {
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
           <div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-0.5">
               <img
                 src="/icon.png"
                 alt="Watermelon logo"
