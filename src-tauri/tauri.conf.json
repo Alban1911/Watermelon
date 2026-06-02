@@ -33,8 +33,7 @@
     "targets": "all",
     "resources": [
       "resources/core.dll",
-      "resources/plugins/preload.js",
-      "resources/cslol-tools/test.dll"
+      "resources/plugins/preload.js"
     ],
     "icon": [
       "icons/32x32.png",

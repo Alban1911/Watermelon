@@ -56,11 +56,10 @@ mod imp {
         STATE.get_or_init(|| Mutex::new(State::default()))
     }
 
-    pub fn resolve_dll_path(resource_dir: &Path) -> PathBuf {
-        resource_dir
-            .join("resources")
+    pub fn resolve_dll_path(app_data_dir: &Path) -> PathBuf {
+        app_data_dir
             .join("cslol-tools")
-            .join("test.dll")
+            .join("runtime-hook.dll")
     }
 
     pub fn load(dll_path: &Path) -> Result<()> {
@@ -293,11 +292,10 @@ mod imp {
     use anyhow::{anyhow, Result};
     use std::path::{Path, PathBuf};
 
-    pub fn resolve_dll_path(resource_dir: &Path) -> PathBuf {
-        resource_dir
-            .join("resources")
+    pub fn resolve_dll_path(app_data_dir: &Path) -> PathBuf {
+        app_data_dir
             .join("cslol-tools")
-            .join("test.dll")
+            .join("runtime-hook.dll")
     }
 
     pub fn load(_dll_path: &Path) -> Result<()> {

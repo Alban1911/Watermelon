@@ -54,6 +54,13 @@ type HookState = {
   error: string | null;
 };
 
+type CslolDllState = {
+  path: string;
+  exists: boolean;
+  isChecking: boolean;
+  error: string | null;
+};
+
 const GROUP_STORAGE_KEY = "talon:groupByChampion";
 const THEME_STORAGE_KEY = "talon:theme";
 
@@ -99,6 +106,12 @@ function App() {
   const [hookState, setHookState] = useState<HookState>({
     active: false,
     isLoading: true,
+    error: null,
+  });
+  const [cslolDll, setCslolDll] = useState<CslolDllState>({
+    path: "",
+    exists: false,
+    isChecking: true,
     error: null,
   });
   const [isDragging, setIsDragging] = useState(false);
@@ -212,6 +225,27 @@ function App() {
     refreshHookStatus();
   }, [load, refreshHookStatus]);
 
+  const refreshCslolDll = useCallback(async () => {
+    setCslolDll((cur) => ({ ...cur, isChecking: true, error: null }));
+    try {
+      const result = await invoke<{ path: string; exists: boolean }>(
+        "get_cslol_dll_status",
+      );
+      setCslolDll({
+        path: result.path,
+        exists: result.exists,
+        isChecking: false,
+        error: null,
+      });
+    } catch (e) {
+      setCslolDll((cur) => ({
+        ...cur,
+        isChecking: false,
+        error: String(e),
+      }));
+    }
+  }, []);
+
   const refreshLeaguePath = useCallback(async () => {
     setLeaguePath((cur) => ({ ...cur, isResolving: true, error: null }));
     try {
@@ -234,6 +268,10 @@ function App() {
   useEffect(() => {
     void refreshLeaguePath();
   }, [refreshLeaguePath]);
+
+  useEffect(() => {
+    void refreshCslolDll();
+  }, [refreshCslolDll]);
 
   const handlePickLeagueFolder = async () => {
     try {
@@ -277,13 +315,25 @@ function App() {
     }
   };
 
+  const handleOpenCslolDllFolder = async () => {
+    try {
+      await invoke("open_cslol_dll_folder");
+      await refreshCslolDll();
+    } catch (e) {
+      setCslolDll((cur) => ({ ...cur, error: String(e) }));
+    }
+  };
+
   // Re-scan whenever the window regains focus — the user has likely
   // just dropped a file into the skins folder via Explorer.
   useEffect(() => {
-    const onFocus = () => load();
+    const onFocus = () => {
+      void load();
+      void refreshCslolDll();
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [load]);
+  }, [load, refreshCslolDll]);
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -622,13 +672,32 @@ function App() {
         </div>
       )}
 
+      {leaguePath.path && (!cslolDll.exists || cslolDll.isChecking) && (
+        <div className="fixed inset-0 z-[75] flex items-center justify-center bg-background px-6 py-8">
+          <div className="w-full max-w-2xl rounded-2xl border bg-card px-6 py-6 shadow-2xl">
+            <CslolDllPrompt
+              path={cslolDll.path}
+              exists={cslolDll.exists}
+              isChecking={cslolDll.isChecking}
+              error={cslolDll.error}
+              onOpenFolder={handleOpenCslolDllFolder}
+              onRefresh={refreshCslolDll}
+              blocking
+            />
+          </div>
+        </div>
+      )}
+
       {settingsOpen && (
         <SettingsDialog
           leaguePath={leaguePath}
+          cslolDll={cslolDll}
           hookState={hookState}
           onSetHookActive={setHookActive}
           onBrowseLeague={handlePickLeagueFolder}
           onDetectLeague={handleAutoDetectLeague}
+          onOpenCslolDllFolder={handleOpenCslolDllFolder}
+          onRefreshCslolDll={refreshCslolDll}
           onClose={() => setSettingsOpen(false)}
         />
       )}
@@ -694,17 +763,23 @@ function App() {
 
 function SettingsDialog({
   leaguePath,
+  cslolDll,
   hookState,
   onSetHookActive,
   onBrowseLeague,
   onDetectLeague,
+  onOpenCslolDllFolder,
+  onRefreshCslolDll,
   onClose,
 }: {
   leaguePath: LeaguePathState;
+  cslolDll: CslolDllState;
   hookState: HookState;
   onSetHookActive: (active: boolean) => void | Promise<void>;
   onBrowseLeague: () => void;
   onDetectLeague: () => void;
+  onOpenCslolDllFolder: () => void;
+  onRefreshCslolDll: () => void;
   onClose: () => void;
 }) {
   return (
@@ -808,6 +883,45 @@ function SettingsDialog({
                 >
                   <FolderOpen />
                   Choose folder
+                </Button>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <div className="mb-2">
+              <h3 className="text-sm font-medium">CSLOL DLL</h3>
+              <p className="text-xs text-muted-foreground">
+                Add your own <code>runtime-hook.dll</code> file in Talon&apos;s app data folder.
+              </p>
+            </div>
+            <div className="rounded-lg border bg-background px-3 py-3">
+              <p className="break-all text-xs text-muted-foreground">
+                {cslolDll.path || "Resolving DLL path..."}
+              </p>
+              <p className="mt-2 text-xs">
+                {cslolDll.exists ? "DLL detected." : "DLL missing."}
+              </p>
+              {cslolDll.error && (
+                <p className="mt-2 text-xs text-destructive">{cslolDll.error}</p>
+              )}
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={onRefreshCslolDll}
+                  disabled={cslolDll.isChecking}
+                >
+                  {cslolDll.isChecking ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <RotateCw />
+                  )}
+                  Check again
+                </Button>
+                <Button size="sm" onClick={onOpenCslolDllFolder}>
+                  <FolderOpen />
+                  Open folder
                 </Button>
               </div>
             </div>
@@ -1116,6 +1230,70 @@ function EmptyState({ onImport }: { onImport: () => void }) {
         </Button>
       </CardContent>
     </Card>
+  );
+}
+
+function CslolDllPrompt({
+  path,
+  exists,
+  isChecking,
+  error,
+  onOpenFolder,
+  onRefresh,
+  blocking = false,
+}: {
+  path: string;
+  exists: boolean;
+  isChecking: boolean;
+  error: string | null;
+  onOpenFolder: () => void;
+  onRefresh: () => void;
+  blocking?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-4",
+        !blocking && "mb-4",
+      )}
+    >
+      <div className="space-y-4">
+        <div>
+          <p className="text-base font-semibold">runtime-hook.dll required</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Talon cannot continue until you place your own <code>runtime-hook.dll</code> file in the folder below.
+          </p>
+        </div>
+        <div className="rounded-lg border bg-background px-3 py-3">
+          <p className="break-all text-xs text-muted-foreground">
+            {path || "Resolving DLL path..."}
+          </p>
+          <p className="mt-2 text-xs">
+            {isChecking
+              ? "Checking folder..."
+              : exists
+                ? "DLL detected."
+                : "DLL not found yet."}
+          </p>
+          {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size={blocking ? "sm" : "xs"} onClick={onOpenFolder}>
+            <FolderOpen />
+            Open folder
+          </Button>
+          <Button
+            size={blocking ? "sm" : "xs"}
+            variant="outline"
+            onClick={onRefresh}
+            disabled={isChecking}
+          >
+            {isChecking ? <Loader2 className="animate-spin" /> : <RotateCw />}
+            Check again
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

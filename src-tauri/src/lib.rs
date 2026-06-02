@@ -45,6 +45,12 @@ struct AppConfig {
     league_install_dir: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct CslolDllStatus {
+    path: String,
+    exists: bool,
+}
+
 fn league_install_dir_cell() -> &'static Mutex<Option<PathBuf>> {
     LEAGUE_INSTALL_DIR.get_or_init(|| Mutex::new(None))
 }
@@ -59,6 +65,15 @@ pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(data_dir.join("settings").join("config.json"))
+}
+
+fn cslol_dll_dir_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(data_dir.join("cslol-tools"))
+}
+
+fn cslol_dll_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(cslol_dll_dir_path(app)?.join("runtime-hook.dll"))
 }
 
 fn load_app_config(app: &AppHandle) -> Result<AppConfig, String> {
@@ -230,7 +245,10 @@ cache/
   previews/background/           Generated carousel backgrounds.
   previews/tile/                 Generated champion tile images.
   champion-icons/                Cached Data Dragon champion icons.
-  cslol-installed/               Legacy/generated cslol install cache.
+cslol-installed/               Legacy/generated cslol install cache.
+
+cslol-tools/
+  runtime-hook.dll             User-supplied runtime hook DLL.
 
 runtime/
   overlay/                       Temporary game overlay files.
@@ -857,6 +875,25 @@ fn get_league_install_path(app: AppHandle) -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
+fn get_cslol_dll_status(app: AppHandle) -> Result<CslolDllStatus, String> {
+    let path = cslol_dll_path(&app)?;
+    Ok(CslolDllStatus {
+        path: path_to_user_string(&path),
+        exists: path.is_file(),
+    })
+}
+
+#[tauri::command]
+fn open_cslol_dll_folder(app: AppHandle) -> Result<String, String> {
+    let dir = cslol_dll_dir_path(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(path_to_user_string(&dir))
+}
+
+#[tauri::command]
 fn set_league_install_path(app: AppHandle, path: String) -> Result<String, String> {
     let normalized = normalize_league_install_dir(std::path::Path::new(&path))?;
     let user_path = path_to_user_string(&normalized);
@@ -889,6 +926,13 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+    let cslol_dll = cslol_dll_path(&app)?;
+    if !cslol_dll.is_file() {
+        return Err(format!(
+            "Missing runtime-hook.dll at {}. Open the cslol-tools folder from setup and add the file first.",
+            path_to_user_string(&cslol_dll)
+        ));
+    }
     let flag = pengu::flag_path(&data_dir);
     let _ = FLAG_PATH.set(flag.clone());
     let _ = CORE_DLL_PATH.set(core_dll.clone());
@@ -917,14 +961,14 @@ fn start_injection_services(app: &AppHandle) {
         return;
     }
 
-    let resource_dir = match app.path().resource_dir() {
+    let data_dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("[Inject] resource dir unavailable, injection disabled: {}", e);
+            eprintln!("[Inject] app data dir unavailable, injection disabled: {}", e);
             return;
         }
     };
-    let cslol_dll = patcher::resolve_dll_path(&resource_dir);
+    let cslol_dll = patcher::resolve_dll_path(&data_dir);
     if let Err(e) = patcher::load(&cslol_dll) {
         eprintln!("[Patcher] load failed: {}", e);
     }
@@ -998,6 +1042,8 @@ pub fn run() {
             clear_custom_tile,
             clear_custom_background,
             get_league_install_path,
+            get_cslol_dll_status,
+            open_cslol_dll_folder,
             set_league_install_path,
             detect_league_install_path,
             activate_pengu,
