@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
-  CheckCircle2,
   FolderOpen,
   Group,
   Loader2,
@@ -128,7 +127,6 @@ function App() {
     isChecking: true,
     error: null,
   });
-  const [showCslolDllReady, setShowCslolDllReady] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Skin | null>(null);
@@ -141,7 +139,6 @@ function App() {
     return stored === null ? true : stored === "1";
   });
   const [selectedChampion, setSelectedChampion] = useState<string | null>(null);
-  const prevCslolDllExistsRef = useRef(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -298,21 +295,6 @@ function App() {
   useEffect(() => {
     void refreshCslolDll();
   }, [refreshCslolDll]);
-
-  useEffect(() => {
-    const wasPresent = prevCslolDllExistsRef.current;
-    const isPresent = cslolDll.exists;
-    prevCslolDllExistsRef.current = isPresent;
-
-    if (!leaguePath.path || cslolDll.isChecking) return;
-    if (wasPresent || !isPresent) return;
-
-    setShowCslolDllReady(true);
-    const timer = window.setTimeout(() => {
-      setShowCslolDllReady(false);
-    }, 1400);
-    return () => window.clearTimeout(timer);
-  }, [cslolDll.exists, cslolDll.isChecking, leaguePath.path]);
 
   const handlePickLeagueFolder = async () => {
     try {
@@ -748,8 +730,7 @@ function App() {
         </div>
       )}
 
-      {leaguePath.path &&
-        (!cslolDll.exists || cslolDll.isChecking || showCslolDllReady) && (
+      {leaguePath.path && (!cslolDll.exists || cslolDll.isChecking) && (
         <div className="fixed inset-0 z-[75] flex items-center justify-center bg-background px-6 py-8">
           <div className="w-full max-w-2xl rounded-2xl border bg-card px-6 py-6 shadow-2xl">
             <CslolDllPrompt
@@ -757,7 +738,6 @@ function App() {
               exists={cslolDll.exists}
               isChecking={cslolDll.isChecking}
               error={cslolDll.error}
-              showReady={showCslolDllReady}
               onOpenFolder={handleOpenCslolDllFolder}
               onRefresh={refreshCslolDll}
               blocking
@@ -1311,7 +1291,6 @@ function CslolDllPrompt({
   exists,
   isChecking,
   error,
-  showReady,
   onOpenFolder,
   onRefresh,
   blocking = false,
@@ -1320,33 +1299,10 @@ function CslolDllPrompt({
   exists: boolean;
   isChecking: boolean;
   error: string | null;
-  showReady: boolean;
   onOpenFolder: () => void;
   onRefresh: () => void;
   blocking?: boolean;
 }) {
-  if (showReady && exists) {
-    return (
-      <div
-        className={cn(
-          "rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-4 py-6",
-          !blocking && "mb-4",
-        )}
-      >
-        <div className="flex flex-col items-center gap-3 text-center">
-          <div className="rounded-full bg-emerald-500/15 p-3 text-emerald-600 dark:text-emerald-400">
-            <CheckCircle2 className="size-10 animate-pulse" />
-          </div>
-          <div>
-            <p className="text-base font-semibold">DLL detected</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Watermelon found <code>cslol-dll.dll</code>. Continuing…
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -1396,3 +1352,4 @@ function CslolDllPrompt({
 }
 
 export default App;
+
