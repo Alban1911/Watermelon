@@ -173,8 +173,7 @@ fn cleanup_on_exit() {
 fn install_ctrlc_handler_for_mode() {
     let install = if cfg!(debug_assertions) {
         ctrlc::set_handler(|| {
-            cleanup_overlay_session("dev Ctrl+C");
-            patcher::unload();
+            cleanup_on_exit();
             spawn_detached_dev_cleanup();
             std::process::exit(0);
         })
@@ -1053,7 +1052,10 @@ fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn pengu_status(app: AppHandle) -> Result<bool, String> {
     let data_dir = talon_data_dir(&app)?;
-    Ok(pengu::flag_path(&data_dir).exists())
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+    let flag = pengu::flag_path(&data_dir);
+    pengu::resume_if_active(&core_dll, &flag).map_err(|e| e.to_string())
 }
 
 fn start_injection_services(app: &AppHandle) {
@@ -1152,6 +1154,27 @@ pub fn run() {
         ])
         .setup(move |app| {
             let setup_handle = app.handle().clone();
+            if let (Ok(data_dir), Ok(resource_dir)) = (
+                talon_data_dir(&setup_handle),
+                setup_handle.path().resource_dir(),
+            ) {
+                let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+                let flag = pengu::flag_path(&data_dir);
+                let _ = FLAG_PATH.set(flag.clone());
+                let _ = CORE_DLL_PATH.set(core_dll.clone());
+                if !no_inject {
+                    match pengu::resume_if_active(&core_dll, &flag) {
+                        Ok(true) => {
+                            eprintln!(
+                                "[Pengu] existing hook detected at startup; resuming injection services"
+                            );
+                            start_injection_services(&setup_handle);
+                        }
+                        Ok(false) => {}
+                        Err(e) => eprintln!("[Pengu] startup hook detection failed: {}", e),
+                    }
+                }
+            }
             if let Ok(paths) = resolve_paths(&setup_handle) {
                 if let Err(e) = migrate_existing_skin_filenames(&paths) {
                     eprintln!("[Migration] filename normalize failed: {}", e);

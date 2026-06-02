@@ -28,6 +28,31 @@ fn is_ours(debugger_value: &str, core_dll_path: &Path) -> bool {
         .contains(&dll_str.to_ascii_lowercase())
 }
 
+fn key_is_ours(core_dll_path: &Path) -> bool {
+    matches!(
+        ifeo::read_debugger_value(),
+        Ok(Some(ref v)) if is_ours(v, core_dll_path)
+    )
+}
+
+/// Returns whether Talon's IFEO hook is already active. If the registry key
+/// still points at our `core.dll`, make sure the activation marker exists so
+/// later status checks and exit cleanup stay in sync after app restarts.
+pub fn resume_if_active(core_dll_path: &Path, flag_path: &Path) -> Result<bool> {
+    if key_is_ours(core_dll_path) {
+        if !flag_path.exists() {
+            write_flag(flag_path).context("rewriting activation marker")?;
+        }
+        return Ok(true);
+    }
+
+    if flag_path.exists() {
+        let _ = fs::remove_file(flag_path);
+    }
+
+    Ok(false)
+}
+
 /// Activates IFEO injection. Writes the registry key under HKLM (requires
 /// admin), creates the activation marker, and best-effort kills any running
 /// LeagueClientUx so the parent respawns it through the rundll32 hook.
@@ -71,12 +96,7 @@ pub fn resolve_core_dll_path<P: AsRef<Path>>(resource_dir: P) -> PathBuf {
 /// meantime, its state is preserved — we just delete our activation
 /// marker and return.
 pub fn deactivate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
-    let key_is_ours = matches!(
-        ifeo::read_debugger_value(),
-        Ok(Some(ref v)) if is_ours(v, core_dll_path)
-    );
-
-    if key_is_ours {
+    if key_is_ours(core_dll_path) {
         ifeo::delete_key().context("deleting IFEO registry key")?;
         process::terminate_league_client_ux();
     } else {
