@@ -9,7 +9,7 @@
 
 // BROWSER PROCESS ONLY.
 //
-// Serves the `https://talon/*` scheme to the LoL client's renderer.
+// Serves the `https://watermelon/*` scheme to the LoL client's renderer.
 // Running as a custom CEF scheme rather than a localhost HTTP server
 // gives us three things:
 //
@@ -25,7 +25,7 @@
 //   GET /assets/splash/*     -> stream `<appdata>/Watermelon/cache/previews/splash/*.png`
 //   GET /assets/tile/*       -> stream `<appdata>/Watermelon/cache/previews/tile/*.png`
 //
-// The index file is written by Talon's Rust backend whenever the
+// The index file is written by Watermelon's Rust backend whenever the
 // enabled-skin state changes. We don't parse JSON in C++; we just
 // stream the file's bytes as `application/json` and let `preload.js`
 // filter by championId client-side.
@@ -157,21 +157,21 @@ static bool url_decode_path_component(const std::u16string &input, std::wstring 
     return true;
 }
 
-class TalonResourceHandler : public CefRefCount<cef_resource_handler_t>
+class WatermelonResourceHandler : public CefRefCount<cef_resource_handler_t>
 {
 public:
-    TalonResourceHandler()
+    WatermelonResourceHandler()
         : CefRefCount(this)
         , stream_(nullptr)
         , length_(0)
     {
-        cef_bind_method(TalonResourceHandler, open);
-        cef_bind_method(TalonResourceHandler, get_response_headers);
-        cef_bind_method(TalonResourceHandler, skip);
-        cef_bind_method(TalonResourceHandler, read);
+        cef_bind_method(WatermelonResourceHandler, open);
+        cef_bind_method(WatermelonResourceHandler, get_response_headers);
+        cef_bind_method(WatermelonResourceHandler, skip);
+        cef_bind_method(WatermelonResourceHandler, read);
     }
 
-    ~TalonResourceHandler()
+    ~WatermelonResourceHandler()
     {
         if (stream_ != nullptr)
             stream_->base.release(&stream_->base);
@@ -227,7 +227,7 @@ private:
         CefScopedStr url = request->get_url(request);
         std::u16string full((char16_t *)url.str, url.length);
 
-        // Strip "https://talon" prefix (13 chars) to get the path.
+        // Strip "https://watermelon" prefix (18 chars) to get the path.
         std::u16string path = (full.length() > 13) ? full.substr(13) : std::u16string();
 
         // Trim query string.
@@ -359,9 +359,9 @@ private:
     }
 };
 
-struct TalonSchemeHandlerFactory : CefRefCount<cef_scheme_handler_factory_t>
+struct WatermelonSchemeHandlerFactory : CefRefCount<cef_scheme_handler_factory_t>
 {
-    TalonSchemeHandlerFactory() : CefRefCount(this)
+    WatermelonSchemeHandlerFactory() : CefRefCount(this)
     {
         cef_scheme_handler_factory_t::create = create;
     }
@@ -373,15 +373,15 @@ struct TalonSchemeHandlerFactory : CefRefCount<cef_scheme_handler_factory_t>
         const cef_string_t *scheme_name,
         struct _cef_request_t *request)
     {
-        return new TalonResourceHandler();
+        return new WatermelonResourceHandler();
     }
 };
 
-void browser::register_talon_domain(cef_request_context_t *ctx)
+void browser::register_watermelon_domain(cef_request_context_t *ctx)
 {
     auto scheme = u"https"_s;
-    auto domain = u"talon"_s;
-    auto factory = new TalonSchemeHandlerFactory();
+    auto domain = u"watermelon"_s;
+    auto factory = new WatermelonSchemeHandlerFactory();
 
     ctx->register_scheme_handler_factory(ctx, &scheme, &domain, factory);
 }

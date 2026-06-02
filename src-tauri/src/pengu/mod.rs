@@ -18,7 +18,7 @@ pub fn flag_path(app_data_dir: &Path) -> PathBuf {
 /// `core.dll`. Windows paths are case-insensitive so the substring match
 /// uses lowercase on both sides. Used as a guard before touching the key
 /// so we don't stomp on another injector that may have set
-/// its own value while Talon was inactive.
+/// its own value while Watermelon was inactive.
 fn is_ours(debugger_value: &str, core_dll_path: &Path) -> bool {
     let Some(dll_str) = core_dll_path.to_str() else {
         return false;
@@ -35,7 +35,7 @@ fn key_is_ours(core_dll_path: &Path) -> bool {
     )
 }
 
-/// Returns whether Talon's IFEO hook is already active. If the registry key
+/// Returns whether Watermelon's IFEO hook is already active. If the registry key
 /// still points at our `core.dll`, make sure the activation marker exists so
 /// later status checks and exit cleanup stay in sync after app restarts.
 pub fn resume_if_active(core_dll_path: &Path, flag_path: &Path) -> Result<bool> {
@@ -58,8 +58,8 @@ pub fn resume_if_active(core_dll_path: &Path, flag_path: &Path) -> Result<bool> 
 /// LeagueClientUx so the parent respawns it through the rundll32 hook.
 ///
 /// Before writing, the current IFEO value is read. If it's already set by
-/// another tool (a non-Talon `core.dll` path), activation is skipped and
-/// the existing value is left alone — Talon will run without injection
+/// another tool (a non-Watermelon `core.dll` path), activation is skipped and
+/// the existing value is left alone — Watermelon will run without injection
 /// this session rather than stomping on the other tool's state.
 pub fn activate(core_dll_path: &Path, flag_path: &Path) -> Result<()> {
     if !core_dll_path.exists() {

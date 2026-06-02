@@ -1,20 +1,20 @@
-// Watermelon preload — Step 5b: real skins via the `https://talon` scheme.
+// Watermelon preload — Step 5b: real skins via the `https://watermelon` scheme.
 //
 // Flow:
 //   1. Wait for the rcp-fe-lol-champ-select plugin to announce itself
 //      via a riotPlugin.announce:* DOM event, capture its API.
-//   2. Pre-fetch `https://talon/skins/all` (served by core.dll from
+//   2. Pre-fetch `https://watermelon/skins/all` (served by core.dll from
 //      Watermelon's on-disk skins_index.json), cache the result on
-//      `window.__talonSkinIndex`.
+//      `window.__watermelonSkinIndex`.
 //   3. Install a wrapper around `champSelectBinding.cache._data.set`
 //      that, on every carousel update, reads the cached index and
 //      splices the current champion's Watermelon skins into the data array
 //      before Ember renders it.
 //
 // Prefer separate Watermelon-served assets for background vs tile:
-//   - `https://talon/assets/background/<fileStem>.png`
-//   - `https://talon/assets/splash/<fileStem>.png`
-//   - `https://talon/assets/tile/<fileStem>.png`
+//   - `https://watermelon/assets/background/<fileStem>.png`
+//   - `https://watermelon/assets/splash/<fileStem>.png`
+//   - `https://watermelon/assets/tile/<fileStem>.png`
 // so the carousel tile can use a HUD-style icon while the background
 // keeps using full splash art.
 
@@ -35,33 +35,33 @@
     const CHAMP_SELECT_SESSION_ENDPOINT = '/lol-champ-select/v1/session';
     const GAMEFLOW_ENDPOINT = '/lol-gameflow/v1/gameflow-phase';
     const SELECTION_ENDPOINT = '/lol-champ-select/v1/session/my-selection';
-    const TALON_INDEX_URL = 'https://talon/skins/all';
-    const TALON_INDEX_VERSION_URL = 'https://talon/skins/version';
-    const TALON_BACKGROUND_ASSET_BASE_URL = 'https://talon/assets/background/';
-    const TALON_SPLASH_ASSET_BASE_URL = 'https://talon/assets/splash/';
-    const TALON_TILE_ASSET_BASE_URL = 'https://talon/assets/tile/';
+    const WATERMELON_INDEX_URL = 'https://watermelon/skins/all';
+    const WATERMELON_INDEX_VERSION_URL = 'https://watermelon/skins/version';
+    const WATERMELON_BACKGROUND_ASSET_BASE_URL = 'https://watermelon/assets/background/';
+    const WATERMELON_SPLASH_ASSET_BASE_URL = 'https://watermelon/assets/splash/';
+    const WATERMELON_TILE_ASSET_BASE_URL = 'https://watermelon/assets/tile/';
     const INDEX_REFRESH_MS = 400;
     // Custom skin ids live above this floor so we can detect ones
     // already injected into a value.data array and skip double-inject.
     const CUSTOM_ID_FLOOR = 9_000_000;
 
-    // Local WS bridge to the Talon Rust side. The LCU has no real event
+    // Local WS bridge to the Watermelon Rust side. The LCU has no real event
     // for "skin currently previewed in carousel" (its session.selectedSkinId
     // only updates when the pick is confirmed), so we DOM-scrape the skin
     // name element and forward the resolved id through this socket.
-    const TALON_BRIDGE_URL = 'ws://127.0.0.1:51234';
+    const WATERMELON_BRIDGE_URL = 'ws://127.0.0.1:51234';
     const BRIDGE_RETRY_BASE_MS = 1000;
     const BRIDGE_RETRY_MAX_MS = 30000;
     const SKIN_NAME_SELECTORS = ['.skin-name-text', '.skin-name'];
     const SKIN_MONITOR_POLL_MS = 250;
     const GOLDEN_BORDER_ENFORCE_MS = 50;
-    const TALON_GOLDEN_STYLE_ID = 'talon-golden-border-style';
+    const WATERMELON_GOLDEN_STYLE_ID = 'watermelon-golden-border-style';
     const FINALIZATION_DEFAULT_PATCH_BEFORE_MS = 400;
     const FINALIZATION_INJECT_BEFORE_MS = 300;
 
     const pluginApis = {};
-    window.__talonPluginApis = pluginApis;
-    window.__talonSkinIndex = {};
+    window.__watermelonPluginApis = pluginApis;
+    window.__watermelonSkinIndex = {};
     let cacheRef = null;
     let parentCacheRef = null;
     let lastIndexJson = '{}';
@@ -72,7 +72,7 @@
     // ── skin monitor / bridge state ─────────────────────────────────
     // lowercased skin name → id, rebuilt every time the carousel cache
     // is set. Includes the base skin, every carousel entry (native +
-    // injected Talon custom), and each entry's childSkins (chromas).
+    // injected Watermelon custom), and each entry's childSkins (chromas).
     const skinNameToId = new Map();
     const skinIdToSkin = new Map();
     let bridgeSocket = null;
@@ -154,7 +154,7 @@
 
         parentCacheRef = parentCache;
 
-        // Pre-fetch the Talon skin index before installing the cache
+        // Pre-fetch the Watermelon skin index before installing the cache
         // hook so the hook can read it synchronously when Ember writes
         // the carousel data. Install the hook regardless of fetch
         // outcome — on failure the index stays empty and we simply
@@ -165,7 +165,7 @@
                 lastIndexVersion = version;
             })
             .catch((e) => {
-                log('talon skin index fetch failed:', e && e.message);
+                log('watermelon skin index fetch failed:', e && e.message);
             })
             .finally(() => {
                 installCacheHook(cacheData);
@@ -176,26 +176,26 @@
     }
 
     function fetchIndex() {
-        return fetch(TALON_INDEX_URL, { cache: 'no-store' })
+        return fetch(WATERMELON_INDEX_URL, { cache: 'no-store' })
             .then((r) => r.json())
             .then((index) => {
                 const normalized = index || {};
-                window.__talonSkinIndex = normalized;
+                window.__watermelonSkinIndex = normalized;
                 lastIndexJson = JSON.stringify(normalized);
                 const champCount = Object.keys(normalized).length;
-                log('talon skin index loaded:', champCount, 'champion(s)');
+                log('watermelon skin index loaded:', champCount, 'champion(s)');
                 return normalized;
             });
     }
 
     function fetchIndexVersion() {
-        return fetch(TALON_INDEX_VERSION_URL, { cache: 'no-store' })
+        return fetch(WATERMELON_INDEX_VERSION_URL, { cache: 'no-store' })
             .then((r) => r.text())
             .then((version) => version || '0');
     }
 
     // ── Carousel cache hook ──────────────────────────────────────────
-    // Talon custom skins are not server-owned carousel selections, so the
+    // Watermelon custom skins are not server-owned carousel selections, so the
     // League client can leave the base skin visually selected. Mirror the
     // fake selected frame by styling the centered carousel item while the
     // visible skin resolves to one of our custom IDs.
@@ -231,16 +231,16 @@
         const originalSend = OriginalXHR.prototype.send;
 
         OriginalXHR.prototype.open = function (method, url) {
-            this.__talonMethod = typeof method === 'string' ? method.toUpperCase() : '';
-            this.__talonUrl = typeof url === 'string' ? url : String(url || '');
+            this.__watermelonMethod = typeof method === 'string' ? method.toUpperCase() : '';
+            this.__watermelonUrl = typeof url === 'string' ? url : String(url || '');
             return originalOpen.apply(this, arguments);
         };
 
         OriginalXHR.prototype.send = function (body) {
             if (
-                this.__talonUrl &&
-                this.__talonUrl.includes(SELECTION_ENDPOINT) &&
-                this.__talonMethod === 'PATCH' &&
+                this.__watermelonUrl &&
+                this.__watermelonUrl.includes(SELECTION_ENDPOINT) &&
+                this.__watermelonMethod === 'PATCH' &&
                 shouldBlockSelectionPatch(body)
             ) {
                 log('desync blocked XHR selection PATCH');
@@ -254,7 +254,7 @@
     function hookDesyncWebSocket() {
         const OriginalWebSocket = window.WebSocket;
 
-        function TalonWebSocket(url, protocols) {
+        function WatermelonWebSocket(url, protocols) {
             const socket =
                 protocols === undefined
                     ? new OriginalWebSocket(url)
@@ -267,17 +267,17 @@
             return socket;
         }
 
-        TalonWebSocket.prototype = OriginalWebSocket.prototype;
-        Object.setPrototypeOf(TalonWebSocket, OriginalWebSocket);
+        WatermelonWebSocket.prototype = OriginalWebSocket.prototype;
+        Object.setPrototypeOf(WatermelonWebSocket, OriginalWebSocket);
         for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
             try {
-                Object.defineProperty(TalonWebSocket, key, {
+                Object.defineProperty(WatermelonWebSocket, key, {
                     value: OriginalWebSocket[key],
                     configurable: true,
                 });
             } catch (_) {}
         }
-        window.WebSocket = TalonWebSocket;
+        window.WebSocket = WatermelonWebSocket;
     }
 
     function fakeXhrNoContent(xhr) {
@@ -500,7 +500,7 @@
     }
 
     function applyCustomOfficialSelection(championId, customSkinId) {
-        const entry = findTalonSkinEntry(championId, customSkinId);
+        const entry = findWatermelonSkinEntry(championId, customSkinId);
         const injectsOn = normalizeInjectsOn(entry && entry.injectsOn);
         const selectedSkinNum =
             actualOfficialSelectedSkinId !== null &&
@@ -524,7 +524,7 @@
         sendBridgeMessage({
             type: 'log',
             message:
-                `desync custom target decision: talon=${customSkinId}` +
+                `desync custom target decision: watermelon=${customSkinId}` +
                 ` file=${(entry && entry.fileStem) || 'unknown'}` +
                 ` injectsOn=${summarizeInjectsOn(injectsOn)}` +
                 ` actualOfficial=${actualOfficialSelectedSkinId ?? 'none'}` +
@@ -535,7 +535,7 @@
             log('desync keeping compatible official skin', actualOfficialSelectedSkinId);
             sendBridgeMessage({
                 type: 'log',
-                message: `desync custom target: keeping official skin ${actualOfficialSelectedSkinId} for Talon skin ${customSkinId}`,
+                message: `desync custom target: keeping official skin ${actualOfficialSelectedSkinId} for Watermelon skin ${customSkinId}`,
             });
             return;
         }
@@ -543,7 +543,7 @@
         const targetSkinNum = Math.min(...injectsOn);
         sendBridgeMessage({
             type: 'log',
-            message: `desync custom target: forcing skin${targetSkinNum} for Talon skin ${customSkinId}`,
+            message: `desync custom target: forcing skin${targetSkinNum} for Watermelon skin ${customSkinId}`,
         });
         patchSelectedSkin(
             championId * 1000 + targetSkinNum,
@@ -551,8 +551,8 @@
         );
     }
 
-    function findTalonSkinEntry(championId, customSkinId) {
-        const entries = (window.__talonSkinIndex || {})[String(championId)] || [];
+    function findWatermelonSkinEntry(championId, customSkinId) {
+        const entries = (window.__watermelonSkinIndex || {})[String(championId)] || [];
         return entries.find((entry) => entry && entry.id === customSkinId) || null;
     }
 
@@ -644,7 +644,7 @@
         lastLoggedCandidateKey = key;
         let label = kind;
         if (kind === 'custom') {
-            label = 'custom talon';
+            label = 'custom watermelon';
         } else if (kind === 'native') {
             label = 'owned official';
         } else if (kind === 'locked') {
@@ -672,17 +672,17 @@
     }
 
     function injectGoldenBorderStyle() {
-        if (document.getElementById(TALON_GOLDEN_STYLE_ID)) {
+        if (document.getElementById(WATERMELON_GOLDEN_STYLE_ID)) {
             return;
         }
         const style = document.createElement('style');
-        style.id = TALON_GOLDEN_STYLE_ID;
+        style.id = WATERMELON_GOLDEN_STYLE_ID;
         style.textContent = `
-.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected) {
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.watermelon-golden-selected) {
   background: #3c3c41 !important;
   outline: 1px solid transparent !important;
 }
-.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected) .skin-selection-thumbnail {
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.watermelon-golden-selected) .skin-selection-thumbnail {
   height: calc(100% - 2px) !important;
   margin: 1px !important;
 }
@@ -690,11 +690,11 @@
 .skin-selection-carousel .skin-selection-item.skin-carousel-offset-2.skin-selection-item-selected:hover .skin-selection-thumbnail {
   filter: none !important;
 }
-.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected):hover {
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.watermelon-golden-selected):hover {
   background: linear-gradient(180deg, #f0e6b2 0%, #f5ecc4 30%, #d4a83c 70%, #c89b3c 100%) !important;
   outline: 1px solid rgba(1, 10, 19, 0.6) !important;
 }
-.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.talon-golden-selected):hover .skin-selection-thumbnail {
+.skin-selection-carousel .skin-selection-item.skin-selection-item-selected:not(.watermelon-golden-selected):hover .skin-selection-thumbnail {
   filter: brightness(1.2) saturate(1.1) !important;
 }
 `;
@@ -702,7 +702,7 @@
     }
 
     function removeGoldenBorderStyle() {
-        const style = document.getElementById(TALON_GOLDEN_STYLE_ID);
+        const style = document.getElementById(WATERMELON_GOLDEN_STYLE_ID);
         if (style && style.parentNode) {
             style.parentNode.removeChild(style);
         }
@@ -710,7 +710,7 @@
 
     function clearGoldenBorderItem() {
         if (styledGoldenItem) {
-            styledGoldenItem.classList.remove('talon-golden-selected');
+            styledGoldenItem.classList.remove('watermelon-golden-selected');
             styledGoldenItem.style.removeProperty('background');
             styledGoldenItem.style.removeProperty('outline');
             styledGoldenItem = null;
@@ -807,7 +807,7 @@
         styledGoldenItem = centeredItem;
         styledGoldenThumbnail = thumbnail;
 
-        centeredItem.classList.add('talon-golden-selected');
+        centeredItem.classList.add('watermelon-golden-selected');
         centeredItem.style.setProperty(
             'background',
             'linear-gradient(0deg, #c8aa6e 0, #c89b3c 44%, #a07b32 59%, #785a28)',
@@ -843,7 +843,7 @@
         }
 
         styledGoldenThumbnail = thumbnail;
-        styledGoldenItem.classList.add('talon-golden-selected');
+        styledGoldenItem.classList.add('watermelon-golden-selected');
         styledGoldenItem.style.setProperty(
             'background',
             'linear-gradient(0deg, #c8aa6e 0, #c89b3c 44%, #a07b32 59%, #785a28)',
@@ -873,7 +873,7 @@
         injectGoldenBorderStyle();
         enforceGoldenBorder();
         goldenBorderTimer = setInterval(enforceGoldenBorder, GOLDEN_BORDER_ENFORCE_MS);
-        log('started golden border enforcement for talon skin', skinId);
+        log('started golden border enforcement for watermelon skin', skinId);
     }
 
     function holdGoldenBorderOnLastCustom() {
@@ -918,9 +918,9 @@
                 return originalSet(key, value);
             }
             lastLiveCarouselValue = value;
-            const injectedCount = injectTalonSkins(value);
+            const injectedCount = injectWatermelonSkins(value);
             if (injectedCount > 0) {
-                log('injected', injectedCount, 'talon skin(s) into carousel');
+                log('injected', injectedCount, 'watermelon skin(s) into carousel');
             }
             updateSkinNameToIdMap(value);
             return originalSet(key, value);
@@ -940,12 +940,12 @@
                     }
                     lastIndexVersion = version;
                     return fetchIndex().then(() => {
-                        log('talon skin index changed — refreshing carousel');
+                        log('watermelon skin index changed — refreshing carousel');
                         refreshCurrentCarousel();
                     });
                 })
                 .catch((e) => {
-                    log('talon skin index refresh failed:', e && e.message);
+                    log('watermelon skin index refresh failed:', e && e.message);
                 });
         }, INDEX_REFRESH_MS);
     }
@@ -967,7 +967,7 @@
         };
 
         try {
-            // The _data.set hook re-injects Talon skins into cleaned.data
+            // The _data.set hook re-injects Watermelon skins into cleaned.data
             // in place, then stores via originalSet.
             cacheRef.set(CAROUSEL_CACHE_KEY, cleaned);
         } catch (e) {
@@ -986,7 +986,7 @@
         }
     }
 
-    function injectTalonSkins(value) {
+    function injectWatermelonSkins(value) {
         const baseSkin = value.data[0];
         const championId = baseSkin && baseSkin.championId;
         if (!championId) {
@@ -994,22 +994,22 @@
             return 0;
         }
 
-        // Idempotent: if any Talon skin is already present (id in
+        // Idempotent: if any Watermelon skin is already present (id in
         // the custom range) we've already handled this data array.
         if (value.data.some((s) => s && typeof s.id === 'number' && s.id >= CUSTOM_ID_FLOOR)) {
             return 0;
         }
 
-        const talonSkins =
-            (window.__talonSkinIndex || {})[String(championId)] || [];
-        if (talonSkins.length === 0) {
+        const watermelonSkins =
+            (window.__watermelonSkinIndex || {})[String(championId)] || [];
+        if (watermelonSkins.length === 0) {
             return 0;
         }
 
-        talonSkins.forEach((entry, i) => {
+        watermelonSkins.forEach((entry, i) => {
             value.data.splice(1 + i, 0, makeCarouselSkin(entry, baseSkin, championId));
         });
-        return talonSkins.length;
+        return watermelonSkins.length;
     }
 
     function makeAssetUrl(baseUrl, fileStem, version) {
@@ -1032,22 +1032,22 @@
         }
     }
 
-    // Builds a carousel entry from a Talon index entry. Start from the
+    // Builds a carousel entry from a Watermelon index entry. Start from the
     // native base-skin object so we preserve whatever extra fields the
     // current League client expects, then override the identity and the
     // image paths we know about.
     function makeCarouselSkin(entry, baseSkin, championId) {
         const splashAssetUrl =
             entry && entry.hasSplashAsset
-                ? makeAssetUrl(TALON_SPLASH_ASSET_BASE_URL, entry.fileStem, entry.splashVersion)
+                ? makeAssetUrl(WATERMELON_SPLASH_ASSET_BASE_URL, entry.fileStem, entry.splashVersion)
                 : null;
         const backgroundAssetUrl =
             entry && entry.hasBackgroundAsset
-                ? makeAssetUrl(TALON_BACKGROUND_ASSET_BASE_URL, entry.fileStem, entry.backgroundVersion)
+                ? makeAssetUrl(WATERMELON_BACKGROUND_ASSET_BASE_URL, entry.fileStem, entry.backgroundVersion)
                 : null;
         const tileAssetUrl =
             entry && entry.hasTileAsset
-                ? makeAssetUrl(TALON_TILE_ASSET_BASE_URL, entry.fileStem, entry.tileVersion)
+                ? makeAssetUrl(WATERMELON_TILE_ASSET_BASE_URL, entry.fileStem, entry.tileVersion)
                 : null;
         const skin = {
             ...baseSkin,
@@ -1079,7 +1079,7 @@
         skin.tilePath = finalTileUrl;
 
         // Riot has changed the exact image-field mix across client builds.
-        // Override every art-like field we commonly see so Talon entries
+        // Override every art-like field we commonly see so Watermelon entries
         // track native behavior more closely.
         setIfPresent(skin, 'uncenteredSplashPath', finalSplashUrl);
         setIfPresent(skin, 'centeredSplashPath', finalSplashUrl);
@@ -1098,7 +1098,7 @@
     // ── Skin hover monitor ──────────────────────────────────────────
     // Rebuilds the name→id table from a freshly-set carousel cache value.
     // Includes the top-level carousel entries (base skin + every style
-    // variant + every Talon custom) and each entry's childSkins array
+    // variant + every Watermelon custom) and each entry's childSkins array
     // (chromas), since the client promotes a chroma's name into the
     // `.skin-name-text` element when one is selected.
     function updateSkinNameToIdMap(value) {
@@ -1170,12 +1170,12 @@
         if (!centeredItem) {
             return false;
         }
-        if (centeredItem.classList.contains('talon-golden-selected')) {
+        if (centeredItem.classList.contains('watermelon-golden-selected')) {
             return false;
         }
         const style = window.getComputedStyle(centeredItem);
         const background = style && style.backgroundImage;
-        if (typeof background === 'string' && background.includes('talon/assets')) {
+        if (typeof background === 'string' && background.includes('watermelon/assets')) {
             return false;
         }
         const media = centeredItem.querySelectorAll('img, [style]');
@@ -1288,7 +1288,7 @@
     function connectBridge() {
         let socket;
         try {
-            socket = new WebSocket(TALON_BRIDGE_URL);
+            socket = new WebSocket(WATERMELON_BRIDGE_URL);
         } catch (e) {
             log('bridge connect threw:', e && e.message);
             scheduleBridgeReconnect();
@@ -1300,7 +1300,7 @@
             log('bridge connected');
             bridgeRetryDelay = BRIDGE_RETRY_BASE_MS;
             // Re-announce the currently visible skin so the Rust side
-            // recovers its state after a reconnect (Talon restart, etc).
+            // recovers its state after a reconnect (Watermelon restart, etc).
             if (lastSentSkinId !== null) {
                 try {
                     socket.send(
@@ -1340,3 +1340,4 @@
 
     log('document.dispatchEvent hook installed');
 })();
+

@@ -9,7 +9,7 @@ use super::library::SkinEntry;
 use super::state::SkinState;
 use crate::data_dragon;
 
-/// Custom skin id scheme (TalonPlugin convention). The 9M range is
+/// Custom skin id scheme (Watermelon plugin convention). The 9M range is
 /// reserved for non-Riot IDs. Each champion gets a 100-slot subrange
 /// so up to 99 custom skins per champion fit without collision.
 fn make_custom_id(champion_id: i64, within: usize) -> i64 {
@@ -42,14 +42,14 @@ struct IndexEntry {
     id: i64,
     champion_id: i64,
     name: String,
-    /// Whether Talon has a cached splash PNG for this skin and can
-    /// therefore serve `https://talon/assets/splash/<fileStem>.png`.
+    /// Whether Watermelon has a cached splash PNG for this skin and can
+    /// therefore serve `https://watermelon/assets/splash/<fileStem>.png`.
     has_splash_asset: bool,
-    /// Whether Talon has a cached composed background PNG for this skin and
-    /// can therefore serve `https://talon/assets/background/<fileStem>.png`.
+    /// Whether Watermelon has a cached composed background PNG for this skin and
+    /// can therefore serve `https://watermelon/assets/background/<fileStem>.png`.
     has_background_asset: bool,
-    /// Whether Talon has a cached HUD/icon PNG for this skin and can
-    /// therefore serve `https://talon/assets/tile/<fileStem>.png`.
+    /// Whether Watermelon has a cached HUD/icon PNG for this skin and can
+    /// therefore serve `https://watermelon/assets/tile/<fileStem>.png`.
     has_tile_asset: bool,
     /// Unix-epoch mtime (in seconds) of each asset file. Appended as
     /// `?v=<version>` in preload.js so the CEF browser re-fetches when
@@ -88,11 +88,11 @@ fn file_version(path: Option<&str>) -> u64 {
 
 /// Builds `skins_index.json` from the current library + state + champion
 /// map and writes it to `index_path`. The file is a
-/// `{championId: [entries...]}` map so `core.dll`'s talon scheme handler
+/// `{championId: [entries...]}` map so `core.dll`'s watermelon scheme handler
 /// can stream it directly, and `preload.js` filters client-side.
 ///
 /// Enabled skins whose champion can't be resolved through the Data
-/// Dragon map are silently skipped — they'll still appear in Talon's
+/// Dragon map are silently skipped — they'll still appear in Watermelon's
 /// library UI, they just don't get an in-game carousel entry until
 /// someone figures out the right alias.
 pub fn regenerate(

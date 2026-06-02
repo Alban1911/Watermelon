@@ -20,7 +20,7 @@ const SOURCES: &[&str] = &[
     "config.cc",
     "browser/browser.cc",
     "browser/assets.cc",
-    "browser/talon.cc",
+    "browser/watermelon.cc",
     "renderer/renderer.cc",
     "renderer/v8_helper.cc",
     "utils/dylib.cc",

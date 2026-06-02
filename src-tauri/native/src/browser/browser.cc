@@ -19,7 +19,7 @@ static cef_request_context_t *Hooked_CefRequestContext_CreateContext(
     auto ctx = CefRequestContext_CreateContext(settings, handler);
 
     browser::register_plugins_domain(ctx);
-    browser::register_talon_domain(ctx);
+    browser::register_watermelon_domain(ctx);
 
     return ctx;
 }

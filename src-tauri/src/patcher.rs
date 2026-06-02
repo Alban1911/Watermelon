@@ -120,7 +120,7 @@ mod imp {
         let thread_stop = Arc::clone(&stop);
         let functions = dll.functions;
         let worker = thread::Builder::new()
-            .name("talon-cslol-patcher".into())
+            .name("watermelon-cslol-patcher".into())
             .spawn(move || run_loop(functions, overlay_path, thread_stop))
             .context("spawning cslol patcher thread")?;
 

@@ -72,7 +72,7 @@ impl HoverRuntime {
 
         let worker = inner.clone();
         thread::Builder::new()
-            .name("talon-overlay-worker".into())
+            .name("watermelon-overlay-worker".into())
             .spawn(move || worker.run())
             .expect("spawning overlay worker thread");
 

@@ -21,7 +21,7 @@ const BRIDGE_ADDR: &str = "127.0.0.1:51234";
 /// kicks off without a round-trip through Tauri's event bus.
 ///
 /// Best-effort: if the port is already in use we log and exit this task
-/// — Talon keeps running, hover detection is simply disabled for the
+/// — Watermelon keeps running, hover detection is simply disabled for the
 /// session. This mirrors how `events::run` returning is non-fatal.
 pub async fn run(app: AppHandle, runtime: Arc<HoverRuntime>) {
     let listener = match TcpListener::bind(BRIDGE_ADDR).await {

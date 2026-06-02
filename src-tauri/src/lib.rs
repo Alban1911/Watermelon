@@ -64,7 +64,7 @@ pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
         .clone()
 }
 
-fn talon_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn watermelon_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let Some(parent) = app_data_dir.parent() else {
         return Err(format!(
@@ -76,12 +76,12 @@ fn talon_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let data_dir = talon_data_dir(app)?;
+    let data_dir = watermelon_data_dir(app)?;
     Ok(data_dir.join("settings").join("config.json"))
 }
 
 fn cslol_dll_dir_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let data_dir = talon_data_dir(app)?;
+    let data_dir = watermelon_data_dir(app)?;
     Ok(data_dir.join("cslol-tools"))
 }
 
@@ -283,7 +283,7 @@ pub(crate) fn cleanup_overlay_session(reason: &str) {
 
 /// Rebuilds the library skin index from the current library
 /// scan + state + champion map. Called on every skin-mutating command so
-/// `core.dll`'s talon scheme handler always serves up-to-date data.
+/// `core.dll`'s watermelon scheme handler always serves up-to-date data.
 /// Best-effort: logs errors but never fails the caller. If the champion
 /// map isn't loaded yet (Data Dragon fetch still in flight), this is a
 /// no-op and the file will be written later when the fetch completes.
@@ -474,7 +474,7 @@ struct AppPaths {
 }
 
 fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
-    let data_dir = talon_data_dir(app)?;
+    let data_dir = watermelon_data_dir(app)?;
     write_storage_readme(&data_dir)?;
     let library_dir = data_dir.join("library");
     let preview_cache_dir = data_dir.join("cache").join("previews");
@@ -496,7 +496,7 @@ fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
 
 /// One-time storage migration for pre-normalization libraries. Existing
 /// `.fantome` files used to keep their source filename, which leaked spaces
-/// and punctuation into preview cache names and Talon asset URLs. Rename them
+/// and punctuation into preview cache names and Watermelon asset URLs. Rename them
 /// into the normalized import format, carry their preview PNG along, and
 /// update enabled-state ids to match.
 fn migrate_existing_skin_filenames(paths: &AppPaths) -> Result<(), String> {
@@ -1019,7 +1019,7 @@ fn set_auto_hook_on_start(app: AppHandle, enabled: bool) -> Result<bool, String>
 }
 
 fn activate_pengu_internal(app: &AppHandle) -> Result<(), String> {
-    let data_dir = talon_data_dir(app)?;
+    let data_dir = watermelon_data_dir(app)?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let cslol_dll = cslol_dll_path(app)?;
@@ -1061,7 +1061,7 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
-    let data_dir = talon_data_dir(&app)?;
+    let data_dir = watermelon_data_dir(&app)?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let flag = pengu::flag_path(&data_dir);
@@ -1070,7 +1070,7 @@ fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn pengu_status(app: AppHandle) -> Result<bool, String> {
-    let data_dir = talon_data_dir(&app)?;
+    let data_dir = watermelon_data_dir(&app)?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let flag = pengu::flag_path(&data_dir);
@@ -1082,7 +1082,7 @@ fn start_injection_services(app: &AppHandle) {
         return;
     }
 
-    let data_dir = match talon_data_dir(app) {
+    let data_dir = match watermelon_data_dir(app) {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("[Inject] app data dir unavailable, injection disabled: {}", e);
@@ -1177,7 +1177,7 @@ pub fn run() {
             let setup_handle = app.handle().clone();
             let mut resumed_active_hook = false;
             if let (Ok(data_dir), Ok(resource_dir)) = (
-                talon_data_dir(&setup_handle),
+                watermelon_data_dir(&setup_handle),
                 setup_handle.path().resource_dir(),
             ) {
                 let core_dll = pengu::resolve_core_dll_path(&resource_dir);
@@ -1252,3 +1252,4 @@ pub fn run() {
             }
         });
 }
+

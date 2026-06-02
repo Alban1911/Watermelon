@@ -7,7 +7,7 @@ const VERSIONS_URL: &str = "https://ddragon.leagueoflegends.com/api/versions.jso
 /// Fetches the latest Data Dragon champion list and builds a map of
 /// sanitized alias → numeric championId. The map is indexed by both the
 /// Data Dragon `id` (e.g. "MonkeyKing") and the display `name` (e.g.
-/// "Wukong") after sanitization, so Talon library entries that use
+/// "Wukong") after sanitization, so Watermelon library entries that use
 /// either naming convention resolve correctly.
 pub async fn fetch_champion_map() -> Result<HashMap<String, i64>> {
     let client = reqwest::Client::builder()
