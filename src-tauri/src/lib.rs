@@ -43,6 +43,8 @@ static INJECTION_SERVICES_STARTED: AtomicBool = AtomicBool::new(false);
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct AppConfig {
     league_install_dir: Option<String>,
+    #[serde(default)]
+    auto_hook_on_start: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1004,6 +1006,38 @@ fn set_league_install_path(app: AppHandle, path: String) -> Result<String, Strin
 }
 
 #[tauri::command]
+fn get_auto_hook_on_start(app: AppHandle) -> Result<bool, String> {
+    Ok(load_app_config(&app)?.auto_hook_on_start)
+}
+
+#[tauri::command]
+fn set_auto_hook_on_start(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    let mut config = load_app_config(&app)?;
+    config.auto_hook_on_start = enabled;
+    save_app_config(&app, &config)?;
+    Ok(enabled)
+}
+
+fn activate_pengu_internal(app: &AppHandle) -> Result<(), String> {
+    let data_dir = talon_data_dir(app)?;
+    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
+    let cslol_dll = cslol_dll_path(app)?;
+    if !cslol_dll.is_file() {
+        return Err(format!(
+            "Missing cslol-dll.dll at {}. Open the cslol-tools folder from setup and add the file first.",
+            path_to_user_string(&cslol_dll)
+        ));
+    }
+    let flag = pengu::flag_path(&data_dir);
+    let _ = FLAG_PATH.set(flag.clone());
+    let _ = CORE_DLL_PATH.set(core_dll.clone());
+    pengu::activate(&core_dll, &flag).map_err(|e| e.to_string())?;
+    start_injection_services(app);
+    Ok(())
+}
+
+#[tauri::command]
 fn detect_league_install_path(app: AppHandle) -> Result<Option<String>, String> {
     let detected = match crate::lcu::process::find_install_directory() {
         Ok(path) => path,
@@ -1022,22 +1056,7 @@ fn detect_league_install_path(app: AppHandle) -> Result<Option<String>, String> 
 
 #[tauri::command]
 fn activate_pengu(app: AppHandle) -> Result<(), String> {
-    let data_dir = talon_data_dir(&app)?;
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-    let core_dll = pengu::resolve_core_dll_path(&resource_dir);
-    let cslol_dll = cslol_dll_path(&app)?;
-    if !cslol_dll.is_file() {
-        return Err(format!(
-            "Missing cslol-dll.dll at {}. Open the cslol-tools folder from setup and add the file first.",
-            path_to_user_string(&cslol_dll)
-        ));
-    }
-    let flag = pengu::flag_path(&data_dir);
-    let _ = FLAG_PATH.set(flag.clone());
-    let _ = CORE_DLL_PATH.set(core_dll.clone());
-    pengu::activate(&core_dll, &flag).map_err(|e| e.to_string())?;
-    start_injection_services(&app);
-    Ok(())
+    activate_pengu_internal(&app)
 }
 
 #[tauri::command]
@@ -1144,9 +1163,11 @@ pub fn run() {
             clear_custom_tile,
             clear_custom_background,
             get_league_install_path,
+            get_auto_hook_on_start,
             get_cslol_dll_status,
             open_cslol_dll_folder,
             set_league_install_path,
+            set_auto_hook_on_start,
             detect_league_install_path,
             activate_pengu,
             deactivate_pengu,
@@ -1154,6 +1175,7 @@ pub fn run() {
         ])
         .setup(move |app| {
             let setup_handle = app.handle().clone();
+            let mut resumed_active_hook = false;
             if let (Ok(data_dir), Ok(resource_dir)) = (
                 talon_data_dir(&setup_handle),
                 setup_handle.path().resource_dir(),
@@ -1165,6 +1187,7 @@ pub fn run() {
                 if !no_inject {
                     match pengu::resume_if_active(&core_dll, &flag) {
                         Ok(true) => {
+                            resumed_active_hook = true;
                             eprintln!(
                                 "[Pengu] existing hook detected at startup; resuming injection services"
                             );
@@ -1186,6 +1209,12 @@ pub fn run() {
                     .as_deref()
                     .and_then(|p| normalize_league_install_dir(std::path::Path::new(p)).ok());
                 set_saved_league_install_dir(saved);
+                if !no_inject && config.auto_hook_on_start && !resumed_active_hook {
+                    match activate_pengu_internal(&setup_handle) {
+                        Ok(()) => eprintln!("[Pengu] auto-hook enabled; activated at startup"),
+                        Err(e) => eprintln!("[Pengu] auto-hook startup activation failed: {}", e),
+                    }
+                }
             }
 
             if !no_inject {

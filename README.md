@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="icon.png" alt="Talon logo" width="128" height="128" />
+  <img src="assets/icon.png" alt="Talon logo" width="128" height="128" />
 </p>
 
 <h1 align="center">Talon</h1>
@@ -18,6 +18,10 @@
 Talon is a Windows desktop app for managing custom League of Legends skins.
 It focuses on a simple flow: import skins, manage a local library, preview what
 you installed, and sync selected skins into the League client experience.
+
+<p align="center">
+  <img src="assets/exorcist-syndra.png" alt="Talon in champion select with a custom Syndra skin preview" />
+</p>
 
 ## Preview
 
@@ -127,10 +131,10 @@ cargo check --manifest-path src-tauri/Cargo.toml
 Runs a fast Rust-only check without launching the desktop app.
 
 ```powershell
-pnpm tauri icon icon.png
+pnpm tauri icon assets/icon.png
 ```
 
-Regenerates the Tauri icon set from the root `icon.png`.
+Regenerates the Tauri icon set from `assets/icon.png`.
 
 ## App Data
 

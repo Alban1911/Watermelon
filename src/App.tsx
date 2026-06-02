@@ -55,6 +55,12 @@ type HookState = {
   error: string | null;
 };
 
+type AutoHookState = {
+  enabled: boolean;
+  isLoading: boolean;
+  error: string | null;
+};
+
 type CslolDllState = {
   path: string;
   exists: boolean;
@@ -106,6 +112,11 @@ function App() {
   });
   const [hookState, setHookState] = useState<HookState>({
     active: false,
+    isLoading: true,
+    error: null,
+  });
+  const [autoHookState, setAutoHookState] = useState<AutoHookState>({
+    enabled: false,
     isLoading: true,
     error: null,
   });
@@ -212,6 +223,15 @@ function App() {
     }
   }, []);
 
+  const refreshAutoHookStatus = useCallback(async () => {
+    try {
+      const enabled = await invoke<boolean>("get_auto_hook_on_start");
+      setAutoHookState({ enabled, isLoading: false, error: null });
+    } catch (e) {
+      setAutoHookState({ enabled: false, isLoading: false, error: String(e) });
+    }
+  }, []);
+
   // Re-snapshot the sort order whenever the user changes what they're
   // looking at — view mode swap (flat ↔ grouped) or champion drill-in/out.
   // The library itself hasn't changed, so this is purely a re-sort: any
@@ -226,7 +246,8 @@ function App() {
   useEffect(() => {
     load();
     refreshHookStatus();
-  }, [load, refreshHookStatus]);
+    refreshAutoHookStatus();
+  }, [load, refreshHookStatus, refreshAutoHookStatus]);
 
   const refreshCslolDll = useCallback(async () => {
     setCslolDll((cur) => ({ ...cur, isChecking: true, error: null }));
@@ -401,6 +422,17 @@ function App() {
     }
   };
 
+  const setAutoHookEnabled = async (enabled: boolean) => {
+    setAutoHookState((cur) => ({ ...cur, enabled, isLoading: true, error: null }));
+    try {
+      await invoke("set_auto_hook_on_start", { enabled });
+      setAutoHookState({ enabled, isLoading: false, error: null });
+    } catch (e) {
+      setAutoHookState((cur) => ({ ...cur, isLoading: false, error: String(e) }));
+      await refreshAutoHookStatus();
+    }
+  };
+
   const handleDeleteSkin = (skin: Skin) => {
     setDeleteTarget(skin);
   };
@@ -556,8 +588,8 @@ function App() {
               variant={hookState.active ? "default" : "outline"}
               onClick={() => setHookActive(!hookState.active)}
               disabled={hookState.isLoading}
-              aria-label={hookState.active ? "Disable League hook" : "Enable League hook"}
-              title={hookState.active ? "Disable League hook" : "Enable League hook"}
+              aria-label={hookState.active ? "Disable League hook now" : "Hook League now"}
+              title={hookState.active ? "Disable League hook now" : "Hook League now"}
             >
               {hookState.isLoading ? <Loader2 className="animate-spin" /> : <Power />}
             </Button>
@@ -712,8 +744,8 @@ function App() {
         <SettingsDialog
           leaguePath={leaguePath}
           cslolDll={cslolDll}
-          hookState={hookState}
-          onSetHookActive={setHookActive}
+          autoHookState={autoHookState}
+          onSetAutoHookEnabled={setAutoHookEnabled}
           onBrowseLeague={handlePickLeagueFolder}
           onDetectLeague={handleAutoDetectLeague}
           onOpenCslolDllFolder={handleOpenCslolDllFolder}
@@ -784,8 +816,8 @@ function App() {
 function SettingsDialog({
   leaguePath,
   cslolDll,
-  hookState,
-  onSetHookActive,
+  autoHookState,
+  onSetAutoHookEnabled,
   onBrowseLeague,
   onDetectLeague,
   onOpenCslolDllFolder,
@@ -794,8 +826,8 @@ function SettingsDialog({
 }: {
   leaguePath: LeaguePathState;
   cslolDll: CslolDllState;
-  hookState: HookState;
-  onSetHookActive: (active: boolean) => void | Promise<void>;
+  autoHookState: AutoHookState;
+  onSetAutoHookEnabled: (enabled: boolean) => void | Promise<void>;
   onBrowseLeague: () => void;
   onDetectLeague: () => void;
   onOpenCslolDllFolder: () => void;
@@ -812,12 +844,7 @@ function SettingsDialog({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="mb-5 flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-semibold">Settings</h2>
-            <p className="text-xs text-muted-foreground">
-              App preferences and League installation.
-            </p>
-          </div>
+          <h2 className="text-base font-semibold">Settings</h2>
           <Button
             size="icon-sm"
             variant="ghost"
@@ -832,31 +859,31 @@ function SettingsDialog({
         <div className="space-y-5">
           <section>
             <div className="mb-2">
-              <h3 className="text-sm font-medium">League client hook</h3>
+              <h3 className="text-sm font-medium">Auto-hook when running the app</h3>
               <p className="text-xs text-muted-foreground">
-                Enable the League client hook when you want Talon in champ select.
+                Enable automatic League client hooking on startup. Leave this off to hook manually.
               </p>
             </div>
             <div className="flex items-center justify-between gap-3 rounded-lg border bg-background px-3 py-3">
               <div>
                 <p className="text-sm font-medium">
-                  {hookState.active ? "Hook enabled" : "Hook disabled"}
+                  {autoHookState.enabled ? "Auto-hook enabled" : "Auto-hook disabled"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {hookState.active
-                    ? "LeagueClientUx will relaunch through Talon."
+                  {autoHookState.enabled
+                    ? "LeagueClientUx will relaunch through Talon when the app starts."
                     : "Talon will not hook the League client on launch."}
                 </p>
-                {hookState.error && (
+                {autoHookState.error && (
                   <p className="mt-2 text-xs text-destructive">
-                    {hookState.error}
+                    {autoHookState.error}
                   </p>
                 )}
               </div>
               <Switch
-                checked={hookState.active}
-                disabled={hookState.isLoading}
-                onCheckedChange={onSetHookActive}
+                checked={autoHookState.enabled}
+                disabled={autoHookState.isLoading}
+                onCheckedChange={onSetAutoHookEnabled}
               />
             </div>
           </section>
