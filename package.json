@@ -1,16 +1,32 @@
 {
-  "name": "talon",
+  "name": "watermelon",
   "private": true,
   "version": "0.1.0",
   "description": "Windows desktop app for managing custom League of Legends skins.",
   "type": "module",
-  "scripts": {
-    "predev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clear-port.ps1",
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
-    "tauri": "tauri"
-  },
+"scripts": {
+
+  "predev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/clear-port.ps1",
+
+  "dev": "vite",
+
+  "build": "tsc && vite build",
+
+  "preview": "vite preview",
+
+  "tauri": "tauri",
+
+
+
+  "tauri:build": "tauri build",
+
+  "sign:exe": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\\Program Files (x86)\\Windows Kits\\10\\bin\\10.0.26100.0\\x64\\signtool.exe' sign /fd SHA256 /td SHA256 /tr http://timestamp.certum.pl /a 'src-tauri\\target\\release\\watermelon.exe'\"",
+
+  "run:signed": "powershell -NoProfile -Command \"& 'src-tauri\\target\\release\\watermelon.exe' 2>&1 | Tee-Object -FilePath logs.txt\"",
+
+  "signed:run": "pnpm tauri:build && pnpm sign:exe && pnpm run:signed"
+
+},
   "dependencies": {
     "@base-ui/react": "^1.3.0",
     "@fontsource-variable/geist": "^5.2.8",

@@ -70,8 +70,8 @@ type CslolDllState = {
   error: string | null;
 };
 
-const GROUP_STORAGE_KEY = "talon:groupByChampion";
-const THEME_STORAGE_KEY = "talon:theme";
+const GROUP_STORAGE_KEY = "watermelon:groupByChampion";
+const THEME_STORAGE_KEY = "watermelon:theme";
 
 /** Computes the "enabled first, then alphabetical by champion, then by
  *  skin name" ordering as a flat array of skin IDs. Used as a display
@@ -570,10 +570,14 @@ function App() {
       <header className="border-b">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
           <div>
-            <h1 className="text-xl font-semibold">Talon</h1>
-            <p className="text-xs text-muted-foreground">
-              League of Legends custom skin manager
-            </p>
+            <div className="flex items-center gap-3">
+              <img
+                src="/icon.png"
+                alt="Watermelon logo"
+                className="size-9 rounded-md object-cover"
+              />
+              <h1 className="text-xl font-semibold">Watermelon</h1>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -793,7 +797,7 @@ function App() {
             <Loader2 className="size-8 animate-spin text-primary" />
             <p className="text-sm font-medium">Importing skin and generating art…</p>
             <p className="text-xs text-muted-foreground">
-              Talon will finish when the splash, tile, and background are ready.
+              Watermelon will finish when the splash, tile, and background are ready.
             </p>
           </div>
         </div>
@@ -893,8 +897,8 @@ function SettingsDialog({
                 </p>
                 <p className="text-xs text-muted-foreground">
                   {autoHookState.enabled
-                    ? "LeagueClientUx will relaunch through Talon when the app starts."
-                    : "Talon will not hook the League client on launch."}
+                    ? "LeagueClientUx will relaunch through Watermelon when the app starts."
+                    : "Watermelon will not hook the League client on launch."}
                 </p>
                 {autoHookState.error && (
                   <p className="mt-2 text-xs text-destructive">
@@ -961,7 +965,7 @@ function SettingsDialog({
             <div className="mb-2">
               <h3 className="text-sm font-medium">CSLOL DLL</h3>
               <p className="text-xs text-muted-foreground">
-                Add your own <code>cslol-dll.dll</code> file in Talon&apos;s app data folder.
+                Add your own <code>cslol-dll.dll</code> file in Watermelon&apos;s app data folder.
               </p>
             </div>
             <div className="rounded-lg border bg-background px-3 py-3">
@@ -1097,7 +1101,7 @@ function SkinCard({
       await action();
       await onCustomChanged();
     } catch (e) {
-      console.error("[Talon] custom asset action failed:", e);
+      console.error("[Watermelon] custom asset action failed:", e);
     }
   };
 
@@ -1266,7 +1270,7 @@ function LeaguePathPrompt({
         <div className="min-w-0">
           <p className="text-base font-semibold">League install path required</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Talon needs your League of Legends install directory before the app can be used. Auto-detect works when the client is running, or you can choose the folder manually.
+            Watermelon needs your League of Legends install directory before the app can be used. Auto-detect works when the client is running, or you can choose the folder manually.
           </p>
           {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </div>
@@ -1336,7 +1340,7 @@ function CslolDllPrompt({
           <div>
             <p className="text-base font-semibold">DLL detected</p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Talon found <code>cslol-dll.dll</code>. Continuing…
+              Watermelon found <code>cslol-dll.dll</code>. Continuing…
             </p>
           </div>
         </div>
@@ -1355,7 +1359,7 @@ function CslolDllPrompt({
         <div>
           <p className="text-base font-semibold">cslol-dll.dll required</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Talon cannot continue until you place your own <code>cslol-dll.dll</code> file in the folder below.
+            Watermelon cannot continue until you place your own <code>cslol-dll.dll</code> file in the folder below.
           </p>
         </div>
         <div className="rounded-lg border bg-background px-3 py-3">

@@ -15,7 +15,7 @@ const OUTER_LOOP_INTERVAL: Duration = Duration::from_secs(2);
 /// Any failure returns us to discovery — the client can be closed or restarted
 /// at any time and we should recover transparently.
 pub async fn run(app: AppHandle) {
-    eprintln!("[Talon] Starting LCU listener");
+    eprintln!("[Watermelon] Starting LCU listener");
 
     'outer: loop {
         let install_dir = match find_install_directory() {

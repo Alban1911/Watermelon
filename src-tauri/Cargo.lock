@@ -4275,34 +4275,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "talon"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "cc",
- "ctrlc",
- "futures-util",
- "image",
- "ltk_texture",
- "native-tls",
- "reqwest",
- "serde",
- "serde_json",
- "sysinfo",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tokio",
- "tokio-tungstenite",
- "windows-sys 0.61.2",
- "xxhash-rust",
- "zip",
- "zstd",
-]
-
-[[package]]
 name = "tao"
 version = "0.34.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5410,6 +5382,34 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap 2.14.0",
  "semver",
+]
+
+[[package]]
+name = "watermelon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "cc",
+ "ctrlc",
+ "futures-util",
+ "image",
+ "ltk_texture",
+ "native-tls",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sysinfo",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tokio",
+ "tokio-tungstenite",
+ "windows-sys 0.61.2",
+ "xxhash-rust",
+ "zip",
+ "zstd",
 ]
 
 [[package]]

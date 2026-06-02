@@ -1,17 +1,17 @@
-// Talon preload — Step 5b: real skins via the `https://talon` scheme.
+// Watermelon preload — Step 5b: real skins via the `https://talon` scheme.
 //
 // Flow:
 //   1. Wait for the rcp-fe-lol-champ-select plugin to announce itself
 //      via a riotPlugin.announce:* DOM event, capture its API.
 //   2. Pre-fetch `https://talon/skins/all` (served by core.dll from
-//      Talon's on-disk skins_index.json), cache the result on
+//      Watermelon's on-disk skins_index.json), cache the result on
 //      `window.__talonSkinIndex`.
 //   3. Install a wrapper around `champSelectBinding.cache._data.set`
 //      that, on every carousel update, reads the cached index and
-//      splices the current champion's Talon skins into the data array
+//      splices the current champion's Watermelon skins into the data array
 //      before Ember renders it.
 //
-// Prefer separate Talon-served assets for background vs tile:
+// Prefer separate Watermelon-served assets for background vs tile:
 //   - `https://talon/assets/background/<fileStem>.png`
 //   - `https://talon/assets/splash/<fileStem>.png`
 //   - `https://talon/assets/tile/<fileStem>.png`
@@ -23,7 +23,7 @@
 
     const log = (...args) => {
         try {
-            console.log('[Talon]', ...args);
+            console.log('[Watermelon]', ...args);
         } catch (_) {}
     };
 

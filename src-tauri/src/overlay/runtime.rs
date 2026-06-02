@@ -455,7 +455,7 @@ fn resolve_custom_skin_id(
 ) -> Result<PathBuf> {
     if skin_id < CUSTOM_SKIN_ID_BASE {
         return Err(anyhow!(
-            "skin id {} is not a Talon custom skin (< {})",
+            "skin id {} is not a Watermelon custom skin (< {})",
             skin_id,
             CUSTOM_SKIN_ID_BASE
         ));

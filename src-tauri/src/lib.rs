@@ -68,11 +68,11 @@ fn talon_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let Some(parent) = app_data_dir.parent() else {
         return Err(format!(
-            "cannot resolve Talon data dir parent from {}",
+            "cannot resolve Watermelon data dir parent from {}",
             app_data_dir.display()
         ));
     };
-    Ok(parent.join("Talon"))
+    Ok(parent.join("Watermelon"))
 }
 
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -238,7 +238,7 @@ fn ps_single_quoted(value: &str) -> String {
 
 fn write_storage_readme(data_dir: &std::path::Path) -> Result<(), String> {
     const README: &str = "\
-Talon app data
+Watermelon app data
 
 settings/
   config.json                    User preferences such as the League install path.

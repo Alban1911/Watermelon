@@ -56,12 +56,12 @@ static void Initialize()
     // Browser process.
     if (wcsfindi(exe_path, L"LeagueClientUx.exe"))
     {
-        OutputDebugStringA("[Talon] Browser process detected");
+        OutputDebugStringA("[Watermelon] Browser process detected");
         if (check_libcef_version(true))
         {
             HookBrowserProcess();
             Old_CreateProcessW.hook(&CreateProcessW, Hooked_CreateProcessW);
-            OutputDebugStringA("[Talon] CreateProcessW hooked");
+            OutputDebugStringA("[Watermelon] CreateProcessW hooked");
         }
     }
     // Render process.
@@ -69,11 +69,11 @@ static void Initialize()
     {
         if (wcsstr(GetCommandLineW(), L"--type=renderer") != nullptr)
         {
-            OutputDebugStringA("[Talon] Renderer process detected");
+            OutputDebugStringA("[Watermelon] Renderer process detected");
             if (check_libcef_version(false))
             {
                 HookRendererProcess();
-                OutputDebugStringA("[Talon] Renderer hooks installed");
+                OutputDebugStringA("[Watermelon] Renderer hooks installed");
             }
         }
     }
@@ -87,7 +87,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved)
         case DLL_PROCESS_ATTACH:
             g_hModule = module;
             DisableThreadLibraryCalls(module);
-            OutputDebugStringA("[Talon] DllMain: DLL_PROCESS_ATTACH");
+            OutputDebugStringA("[Watermelon] DllMain: DLL_PROCESS_ATTACH");
             Initialize();
             break;
 
@@ -125,7 +125,7 @@ extern "C" __declspec(dllexport) int APIENTRY _BootstrapEntryW(HWND, HINSTANCE, 
     LONG (NTAPI *NtRemoveProcessDebug)(HANDLE, HANDLE);
     LONG (NTAPI *NtClose)(HANDLE Handle);
 
-    OutputDebugStringA("[Talon] _BootstrapEntry called");
+    OutputDebugStringA("[Watermelon] _BootstrapEntry called");
 
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
@@ -137,7 +137,7 @@ extern "C" __declspec(dllexport) int APIENTRY _BootstrapEntryW(HWND, HINSTANCE, 
     {
         char msg[128];
         snprintf(msg, sizeof(msg), "Failed to create LeagueClientUx process, last error: 0x%08X.", (unsigned)GetLastError());
-        MessageBoxA(NULL, msg, "Talon bootstrapper", MB_ICONWARNING | MB_OK | MB_TOPMOST);
+        MessageBoxA(NULL, msg, "Watermelon bootstrapper", MB_ICONWARNING | MB_OK | MB_TOPMOST);
         return 1;
     }
 

@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/icon.png" alt="Talon logo" width="128" height="128" />
+  <img src="assets/icon.png" alt="Watermelon logo" width="128" height="128" />
 </p>
 
-<h1 align="center">Talon</h1>
+<h1 align="center">Watermelon</h1>
 
 <p align="center">
   A Windows desktop app for managing custom League of Legends skins.
@@ -15,12 +15,12 @@
   <img alt="Windows" src="https://img.shields.io/badge/Windows-first-0078d4?style=for-the-badge&logo=windows&logoColor=white" />
 </p>
 
-Talon is a Windows desktop app for managing custom League of Legends skins.
+Watermelon is a Windows desktop app for managing custom League of Legends skins.
 It focuses on a simple flow: import skins, manage a local library, preview what
 you installed, and sync selected skins into the League client experience.
 
 <p align="center">
-  <img src="assets/exorcist-syndra.png" alt="Talon in champion select with a custom Syndra skin preview" />
+  <img src="assets/exorcist-syndra.png" alt="Watermelon in champion select with a custom Syndra skin preview" />
 </p>
 
 ## Preview
@@ -39,9 +39,9 @@ Import .fantome -> review generated previews -> enable skins -> launch League
 - Build an in-client skin index from imported skins and Data Dragon champion data.
 - Clean up temporary overlay and runtime files on app exit.
 
-## What Talon Does
+## What Watermelon Does
 
-Talon is built around the practical tasks involved in using custom skins day to
+Watermelon is built around the practical tasks involved in using custom skins day to
 day:
 
 - Keep all imported `.fantome` mods in one local library.
@@ -54,7 +54,7 @@ day:
 ## Typical Workflow
 
 1. Import one or more `.fantome` files.
-2. Let Talon scan metadata and generate preview assets.
+2. Let Watermelon scan metadata and generate preview assets.
 3. Review the library and enable the skins you want.
 4. Launch or reconnect to the League Client.
 5. Use the synchronized in-client skin data during champion select.
@@ -138,10 +138,10 @@ Regenerates the Tauri icon set from `assets/icon.png`.
 
 ## App Data
 
-Talon stores user data in the app data directory, usually:
+Watermelon stores user data in the app data directory, usually:
 
 ```text
-%APPDATA%\Talon\
+%APPDATA%\Watermelon\
 ```
 
 Important subdirectories:

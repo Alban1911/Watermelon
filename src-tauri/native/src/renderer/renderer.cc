@@ -170,7 +170,7 @@ static void ExecutePreloadScript(cef_frame_t *frame)
     }
     else
     {
-        OutputDebugStringA("[Talon] preload.js not found");
+        OutputDebugStringA("[Watermelon] preload.js not found");
     }
 }
 
@@ -186,7 +186,7 @@ static void CEF_CALLBACK Hooked_OnContextCreated(
     // Detect main page.
     if (is_main_ && url.startw("https://riot:") && url.endw("/index.html"))
     {
-        OutputDebugStringA("[Talon] V8 context created for main page");
+        OutputDebugStringA("[Watermelon] V8 context created for main page");
 
         auto window = context->get_global(context);
 
@@ -231,6 +231,6 @@ static int Hooked_CefExecuteProcess(const cef_main_args_t* args, cef_app_t* app,
 
 void HookRendererProcess()
 {
-    OutputDebugStringA("[Talon] HookRendererProcess");
+    OutputDebugStringA("[Watermelon] HookRendererProcess");
     CefExecuteProcess.hook(LIBCEF_MODULE_NAME, "cef_execute_process", Hooked_CefExecuteProcess);
 }

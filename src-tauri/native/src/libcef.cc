@@ -30,7 +30,7 @@ bool check_libcef_version(bool is_browser)
         if (get_version == nullptr || get_version(0) != CEF_VERSION_MAJOR)
         {
             if (is_browser)
-                dialog::alert("Talon does not support your Client version.", "Talon");
+                dialog::alert("Watermelon does not support your Client version.", "Watermelon");
             return false;
         }
 
@@ -42,7 +42,7 @@ bool check_libcef_version(bool is_browser)
     else
     {
         if (is_browser)
-            dialog::alert("Failed to load Chromium Embedded Framework.", "Talon");
+            dialog::alert("Failed to load Chromium Embedded Framework.", "Watermelon");
         return false;
     }
 }
