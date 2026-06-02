@@ -18,6 +18,8 @@ import {
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import discordMark from "@/assets/discord-mark.svg";
+import githubMark from "@/assets/github-mark.svg";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -576,15 +578,6 @@ function App() {
           <div className="flex items-center gap-2">
             <Button
               size="icon"
-              variant="ghost"
-              onClick={() => setSettingsOpen(true)}
-              aria-label="Open settings"
-              title="Settings"
-            >
-              <Settings />
-            </Button>
-            <Button
-              size="icon"
               variant={hookState.active ? "default" : "outline"}
               onClick={() => setHookActive(!hookState.active)}
               disabled={hookState.isLoading}
@@ -593,6 +586,26 @@ function App() {
             >
               {hookState.isLoading ? <Loader2 className="animate-spin" /> : <Power />}
             </Button>
+            <a
+              className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              href="https://discord.gg/XUyTqXqHSU"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Join Discord server"
+              title="Discord"
+            >
+              <img src={discordMark} alt="" className="size-4 invert dark:invert-0" />
+            </a>
+            <a
+              className="inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              href="https://github.com/Alban1911"
+              target="_blank"
+              rel="noreferrer"
+              aria-label="Open GitHub profile"
+              title="GitHub"
+            >
+              <img src={githubMark} alt="" className="size-4 dark:invert" />
+            </a>
             <Button
               size="icon"
               variant="ghost"
@@ -601,6 +614,15 @@ function App() {
               title={isDark ? "Switch to light mode" : "Switch to dark mode"}
             >
               {isDark ? <Sun /> : <Moon />}
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Open settings"
+              title="Settings"
+            >
+              <Settings />
             </Button>
             <Button variant="outline" onClick={handleOpenFolder}>
               <FolderOpen />
