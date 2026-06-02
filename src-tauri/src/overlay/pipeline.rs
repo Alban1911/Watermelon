@@ -214,7 +214,7 @@ pub fn build_overlay_from_index(
 /// match a game WAD filename. That's true for every properly-built
 /// skin mod. If it doesn't match, the mount is skipped with a warning.
 ///
-/// For map WADs, we follow upstream's cache strategy more closely: keep a
+/// For map WADs, we follow the established cache strategy more closely: keep a
 /// cached original `Map*.wad.client` under the overlay tree, patch only
 /// the matching TOC entries in place, and preserve those base map copies
 /// across cleanup so later injections can reuse them.

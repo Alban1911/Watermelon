@@ -17,7 +17,7 @@ pub fn flag_path(app_data_dir: &Path) -> PathBuf {
 /// Returns true if the given IFEO `Debugger` value references our own
 /// `core.dll`. Windows paths are case-insensitive so the substring match
 /// uses lowercase on both sides. Used as a guard before touching the key
-/// so we don't stomp on another injector (e.g. upstream) that may have set
+/// so we don't stomp on another injector that may have set
 /// its own value while Talon was inactive.
 fn is_ours(debugger_value: &str, core_dll_path: &Path) -> bool {
     let Some(dll_str) = core_dll_path.to_str() else {

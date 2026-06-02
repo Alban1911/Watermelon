@@ -16,8 +16,8 @@
 </p>
 
 Talon is a Windows desktop app for managing custom League of Legends skins.
-
-It imports `.fantome` skin mods, builds a local skin library, generates preview assets, tracks enabled skins, and integrates with the League client so selected custom skins can appear in the in-client carousel.
+It focuses on a simple flow: import skins, manage a local library, preview what
+you installed, and sync selected skins into the League client experience.
 
 ## Preview
 
@@ -28,12 +28,32 @@ Import .fantome -> review generated previews -> enable skins -> launch League
 ## Features
 
 - Import `.fantome` skins with a file picker or drag-and-drop.
-- Browse the local skin library with champion, author, version, and preview metadata.
-- Enable or disable imported skins.
+- Build a local skin library with champion, author, version, and preview metadata.
+- Enable or disable skins without touching the original imported files.
 - Generate and cache splash, background, tile, and champion icon assets.
-- Detect the running League Client through the LCU lockfile.
-- Build an in-game skin index from imported skins and Data Dragon champion data.
-- Manage temporary overlay/runtime files and cleanup on app exit.
+- Detect the League Client automatically through the LCU lockfile.
+- Build an in-client skin index from imported skins and Data Dragon champion data.
+- Clean up temporary overlay and runtime files on app exit.
+
+## What Talon Does
+
+Talon is built around the practical tasks involved in using custom skins day to
+day:
+
+- Keep all imported `.fantome` mods in one local library.
+- Show useful metadata so you can identify skins quickly.
+- Generate preview media so the library is easier to browse.
+- Track which skins are enabled and disabled.
+- Prepare the runtime overlay files needed for the League client.
+- Integrate selected skins into the in-client carousel flow.
+
+## Typical Workflow
+
+1. Import one or more `.fantome` files.
+2. Let Talon scan metadata and generate preview assets.
+3. Review the library and enable the skins you want.
+4. Launch or reconnect to the League Client.
+5. Use the synchronized in-client skin data during champion select.
 
 ## Tech Stack
 
@@ -53,6 +73,7 @@ Import .fantome -> review generated previews -> enable skins -> launch League
 - pnpm
 - Rust stable
 - Tauri prerequisites for Windows
+- MSVC build tools for the native `core.dll` bridge build
 - League of Legends installed
 
 Enable pnpm through Corepack if needed:
@@ -80,6 +101,10 @@ Build the app:
 ```powershell
 pnpm tauri build
 ```
+
+During the Rust build, `src-tauri/build.rs` compiles the native CEF bridge and
+emits `src-tauri/resources/core.dll`. That DLL is a generated build artifact and
+is not committed to the repository.
 
 The production bundle is written under:
 

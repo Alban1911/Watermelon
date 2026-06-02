@@ -196,7 +196,7 @@
 
     // ── Carousel cache hook ──────────────────────────────────────────
     // Talon custom skins are not server-owned carousel selections, so the
-    // League client can leave the base skin visually selected. Mirror upstream's
+    // League client can leave the base skin visually selected. Mirror the
     // fake selected frame by styling the centered carousel item while the
     // visible skin resolves to one of our custom IDs.
     // ── Champ-select desync ─────────────────────────────────────────
