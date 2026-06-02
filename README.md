@@ -137,7 +137,7 @@ Regenerates the Tauri icon set from the root `icon.png`.
 Talon stores user data in the app data directory, usually:
 
 ```text
-%APPDATA%\com.talon.app\
+%APPDATA%\Talon\
 ```
 
 Important subdirectories:

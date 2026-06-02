@@ -62,13 +62,24 @@ pub(crate) fn saved_league_install_dir() -> Option<PathBuf> {
         .clone()
 }
 
+fn talon_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let Some(parent) = app_data_dir.parent() else {
+        return Err(format!(
+            "cannot resolve Talon data dir parent from {}",
+            app_data_dir.display()
+        ));
+    };
+    Ok(parent.join("Talon"))
+}
+
 fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(app)?;
     Ok(data_dir.join("settings").join("config.json"))
 }
 
 fn cslol_dll_dir_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(app)?;
     Ok(data_dir.join("cslol-tools"))
 }
 
@@ -310,6 +321,12 @@ fn regenerate_skin_index(app: &AppHandle) {
     if let Err(e) = skins::index::regenerate(&paths.skins_index_path, &skins, &state, champion_map)
     {
         eprintln!("[SkinIndex] regenerate failed: {}", e);
+    } else {
+        eprintln!(
+            "[SkinIndex] regenerated {} entries -> {}",
+            skins.len(),
+            paths.skins_index_path.display()
+        );
     }
 }
 
@@ -456,7 +473,7 @@ struct AppPaths {
 }
 
 fn resolve_paths(app: &AppHandle) -> Result<AppPaths, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(app)?;
     write_storage_readme(&data_dir)?;
     let library_dir = data_dir.join("library");
     let preview_cache_dir = data_dir.join("cache").join("previews");
@@ -598,6 +615,11 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
         &state,
     )
     .map_err(|e| e.to_string())?;
+    eprintln!(
+        "[Library] scanned {} skin(s) from {}",
+        skins.len(),
+        paths.skins_dir.display()
+    );
     spawn_asset_warmup(app.clone());
     Ok(SkinLibrary {
         dir: paths.skins_dir.to_string_lossy().into_owned(),
@@ -609,8 +631,14 @@ fn list_skins(app: AppHandle) -> Result<SkinLibrary, String> {
 fn set_skin_enabled(app: AppHandle, id: String, enabled: bool) -> Result<(), String> {
     let paths = resolve_paths(&app)?;
     let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
-    state.set(id, enabled);
+    state.set(id.clone(), enabled);
     state.save(&paths.state_path).map_err(|e| e.to_string())?;
+    eprintln!(
+        "[Library] set enabled={} for skin id='{}' via {}",
+        enabled,
+        id,
+        paths.state_path.display()
+    );
     regenerate_skin_index(&app);
     spawn_champ_select_refresh();
     Ok(())
@@ -622,6 +650,7 @@ fn open_skins_folder(app: AppHandle) -> Result<(), String> {
     // Make sure the folder exists before trying to open it — on a fresh
     // install the app data dir may not yet be created.
     std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
+    eprintln!("[Library] opening skins folder {}", paths.skins_dir.display());
     app.opener()
         .open_path(paths.skins_dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
@@ -633,10 +662,12 @@ fn open_skins_folder(app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
     let paths = resolve_paths(&app)?;
+    eprintln!("[Library] deleting skin id='{}'", id);
 
     let fantome_path = paths.skins_dir.join(format!("{id}.fantome"));
     if fantome_path.exists() {
         std::fs::remove_file(&fantome_path).map_err(|e| format!("removing .fantome: {e}"))?;
+        eprintln!("[Library] removed mod file {}", fantome_path.display());
     }
 
     // Cached / derived files — the .fantome is already gone so we don't
@@ -652,12 +683,14 @@ fn delete_skin(app: AppHandle, id: String) -> Result<(), String> {
     ] {
         if cached.exists() {
             let _ = std::fs::remove_file(&cached);
+            eprintln!("[Library] removed cached asset {}", cached.display());
         }
     }
 
     let mut state = SkinState::load(&paths.state_path).map_err(|e| e.to_string())?;
     state.set(id, false);
     state.save(&paths.state_path).map_err(|e| e.to_string())?;
+    eprintln!("[Library] deletion complete");
 
     regenerate_skin_index(&app);
     spawn_champ_select_refresh();
@@ -739,9 +772,25 @@ async fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
             .ok_or_else(|| "invalid file name".to_string())?;
         let normalized_name = normalize_import_filename(file_name);
         let dest = pick_dest(&paths.skins_dir, &normalized_name);
+        let imported_id = dest
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<invalid>");
+        eprintln!(
+            "[Library] importing file source={} normalized={} id='{}' dest={}",
+            source_path.display(),
+            normalized_name,
+            imported_id,
+            dest.display()
+        );
 
         std::fs::copy(&source_path, &dest).map_err(|e| e.to_string())?;
         let warmed = warm_assets_for_skin(&task_app, &dest)?;
+        eprintln!(
+            "[Library] import complete id='{}' warmed_assets={}",
+            imported_id,
+            warmed
+        );
         regenerate_skin_index(&task_app);
         if warmed {
             let _ = task_app.emit("library:assets-updated", ());
@@ -767,8 +816,25 @@ async fn import_skin_bytes(app: AppHandle, filename: String, bytes: Vec<u8>) -> 
 
         let normalized_name = normalize_import_filename(&filename);
         let dest = pick_dest(&paths.skins_dir, &normalized_name);
+        let imported_id = dest
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("<invalid>");
+        eprintln!(
+            "[Library] importing bytes filename={} size={} normalized={} id='{}' dest={}",
+            filename,
+            bytes.len(),
+            normalized_name,
+            imported_id,
+            dest.display()
+        );
         std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
         let warmed = warm_assets_for_skin(&task_app, &dest)?;
+        eprintln!(
+            "[Library] byte import complete id='{}' warmed_assets={}",
+            imported_id,
+            warmed
+        );
         regenerate_skin_index(&task_app);
         if warmed {
             let _ = task_app.emit("library:assets-updated", ());
@@ -832,6 +898,18 @@ async fn set_custom_asset(
 
         let source_bytes = std::fs::read(&source).map_err(|e| format!("reading {source}: {e}"))?;
         let dest = custom_asset_dest(&paths, kind, &id);
+        let kind_label = match kind {
+            CustomAssetKind::Tile => "tile",
+            CustomAssetKind::Background => "background",
+        };
+        eprintln!(
+            "[Library] setting custom {} for id='{}' source={} bytes={} dest={}",
+            kind_label,
+            id,
+            source,
+            source_bytes.len(),
+            dest.display()
+        );
         match kind {
             CustomAssetKind::Tile => {
                 skins::preview::save_custom_tile(&source_bytes, &dest).map_err(|e| e.to_string())?
@@ -845,6 +923,11 @@ async fn set_custom_asset(
         regenerate_skin_index(&task_app);
         spawn_champ_select_refresh();
         let _ = task_app.emit("library:assets-updated", ());
+        eprintln!(
+            "[Library] custom {} updated for id='{}'",
+            kind_label,
+            id
+        );
         Ok(())
     })
     .await
@@ -854,8 +937,25 @@ async fn set_custom_asset(
 fn clear_custom_asset(app: &AppHandle, id: &str, kind: CustomAssetKind) -> Result<(), String> {
     let paths = resolve_paths(app)?;
     let dest = custom_asset_dest(&paths, kind, id);
+    let kind_label = match kind {
+        CustomAssetKind::Tile => "tile",
+        CustomAssetKind::Background => "background",
+    };
     if dest.exists() {
         std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+        eprintln!(
+            "[Library] cleared custom {} for id='{}' at {}",
+            kind_label,
+            id,
+            dest.display()
+        );
+    } else {
+        eprintln!(
+            "[Library] clear custom {} skipped for id='{}' (missing {})",
+            kind_label,
+            id,
+            dest.display()
+        );
     }
     regenerate_skin_index(app);
     spawn_champ_select_refresh();
@@ -923,7 +1023,7 @@ fn detect_league_install_path(app: AppHandle) -> Result<Option<String>, String> 
 
 #[tauri::command]
 fn activate_pengu(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(&app)?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let cslol_dll = cslol_dll_path(&app)?;
@@ -943,7 +1043,7 @@ fn activate_pengu(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(&app)?;
     let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
     let core_dll = pengu::resolve_core_dll_path(&resource_dir);
     let flag = pengu::flag_path(&data_dir);
@@ -952,7 +1052,7 @@ fn deactivate_pengu(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn pengu_status(app: AppHandle) -> Result<bool, String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = talon_data_dir(&app)?;
     Ok(pengu::flag_path(&data_dir).exists())
 }
 
@@ -961,7 +1061,7 @@ fn start_injection_services(app: &AppHandle) {
         return;
     }
 
-    let data_dir = match app.path().app_data_dir() {
+    let data_dir = match talon_data_dir(app) {
         Ok(dir) => dir,
         Err(e) => {
             eprintln!("[Inject] app data dir unavailable, injection disabled: {}", e);
