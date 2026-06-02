@@ -1,3 +1,5 @@
+> Note: `Watermelon` is a temporary name and will likely change in the future once I settle on a better one.
+
 <p align="center">
   <img src="assets/icon.png" alt="Watermelon logo" width="128" height="128" />
 </p>
