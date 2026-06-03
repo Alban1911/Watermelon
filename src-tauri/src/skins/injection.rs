@@ -91,12 +91,7 @@ impl PreviousInjectsOnIndex {
         Self { entries }
     }
 
-    pub fn get_or_detect(
-        &self,
-        id: &str,
-        fantome_path: &Path,
-        champion: &str,
-    ) -> Result<Vec<u32>> {
+    pub fn get_or_detect(&self, id: &str, fantome_path: &Path, champion: &str) -> Result<Vec<u32>> {
         let fingerprint = FileFingerprint::read(fantome_path)?;
         if let Some(entry) = self.entries.get(id) {
             let metadata_matches = entry.source_file_len == Some(fingerprint.len)

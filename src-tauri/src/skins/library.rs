@@ -108,12 +108,8 @@ pub fn scan(
             (Some(custom_background.to_string_lossy().into_owned()), true)
         } else {
             (
-                preview::cached_background_preview_path(
-                    &path,
-                    background_previews_dir,
-                    &stem,
-                )
-                .map(|p| p.to_string_lossy().into_owned()),
+                preview::cached_background_preview_path(&path, background_previews_dir, &stem)
+                    .map(|p| p.to_string_lossy().into_owned()),
                 false,
             )
         };

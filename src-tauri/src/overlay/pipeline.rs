@@ -10,8 +10,8 @@ use xxhash_rust::xxh3::Xxh3;
 use super::game_paths::GamePathIndex;
 use super::hash::xxh64_lower;
 use super::wad::toc::{
-    write_header, write_v34_entry, EntryLoc, Toc, TocEntry, ENTRY_SIZE, HEADER_SIZE,
-    LATEST_MAJOR, LATEST_MINOR,
+    write_header, write_v34_entry, EntryLoc, Toc, TocEntry, ENTRY_SIZE, HEADER_SIZE, LATEST_MAJOR,
+    LATEST_MINOR,
 };
 use super::wad::{EntryData, Index, Mounted};
 
@@ -268,9 +268,7 @@ pub fn build_overlay_fast(
             .entries
             .retain(|name, _| !blocked.contains(name));
     }
-    mod_idx
-        .mounts
-        .retain(|_, m| !m.archive.entries.is_empty());
+    mod_idx.mounts.retain(|_, m| !m.archive.entries.is_empty());
     let entries_after: usize = mod_idx
         .mounts
         .values()
@@ -315,8 +313,7 @@ pub fn build_overlay_fast(
 
         let out_path = overlay_path.join(&base.relpath);
         if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
+            fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
         eprintln!("[Inject] fast-mkoverlay: writing {}", out_path.display());
         base.archive
@@ -439,8 +436,7 @@ fn ensure_cached_map_wad(src_path: &Path, dst_path: &Path) -> Result<()> {
         return Ok(());
     }
     if let Some(parent) = dst_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     fs::copy(src_path, dst_path).with_context(|| {
         format!(
@@ -457,8 +453,7 @@ fn ensure_cached_map_wad(src_path: &Path, dst_path: &Path) -> Result<()> {
 }
 
 fn hash_file(path: &Path) -> Result<u64> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let mut file = fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut hasher = Xxh3::new();
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
@@ -672,7 +667,11 @@ fn compute_header_checksum(entries: &[TocEntry]) -> [u8; 8] {
     hasher.digest().to_le_bytes()
 }
 
-fn cleanup_overlay_except(dir: &Path, keep: &HashSet<String>, game_paths: &GamePathIndex) -> Result<()> {
+fn cleanup_overlay_except(
+    dir: &Path,
+    keep: &HashSet<String>,
+    game_paths: &GamePathIndex,
+) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
@@ -680,9 +679,7 @@ fn cleanup_overlay_except(dir: &Path, keep: &HashSet<String>, game_paths: &GameP
 }
 
 fn cleanup_recursive(dir: &Path, keep: &HashSet<String>, game_paths: &GamePathIndex) -> Result<()> {
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -704,7 +701,10 @@ fn cleanup_recursive(dir: &Path, keep: &HashSet<String>, game_paths: &GamePathIn
                     continue;
                 }
             }
-            eprintln!("[Inject] fast-mkoverlay: cleanup removing {}", path.display());
+            eprintln!(
+                "[Inject] fast-mkoverlay: cleanup removing {}",
+                path.display()
+            );
             let _ = fs::remove_file(&path);
         }
     }

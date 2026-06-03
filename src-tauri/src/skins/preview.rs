@@ -103,7 +103,9 @@ fn find_splash_via_bin(reader: &WadReader) -> Option<Vec<u8>> {
         ) {
             continue;
         }
-        let Ok(decoded) = reader.extract(entry) else { continue };
+        let Ok(decoded) = reader.extract(entry) else {
+            continue;
+        };
         if decoded.len() < 4 || &decoded[..4] != b"PROP" {
             continue;
         }
@@ -141,7 +143,9 @@ fn find_tile_via_bin(reader: &WadReader) -> Option<Vec<u8>> {
         ) {
             continue;
         }
-        let Ok(decoded) = reader.extract(entry) else { continue };
+        let Ok(decoded) = reader.extract(entry) else {
+            continue;
+        };
         if decoded.len() < 4 || &decoded[..4] != b"PROP" {
             continue;
         }
@@ -241,7 +245,9 @@ fn find_tile_in_unpacked_zip(zip: &mut ZipArchive<File>) -> Option<Vec<u8>> {
 
     ranked.sort_by_key(|(rank, _)| *rank);
     for (_, i) in ranked {
-        let Ok(mut entry) = zip.by_index(i) else { continue };
+        let Ok(mut entry) = zip.by_index(i) else {
+            continue;
+        };
         let mut buf = Vec::new();
         if entry.read_to_end(&mut buf).is_err() {
             continue;
@@ -303,7 +309,9 @@ fn collect_textures_from_reader(reader: &WadReader) -> Vec<Vec<u8>> {
         ) {
             continue;
         }
-        let Ok(decoded) = reader.extract(entry) else { continue };
+        let Ok(decoded) = reader.extract(entry) else {
+            continue;
+        };
         if is_texture_magic(&decoded) {
             out.push(decoded);
         }
@@ -331,7 +339,9 @@ fn collect_textures_from_unpacked_zip(zip: &mut ZipArchive<File>) -> Vec<Vec<u8>
         if !is_wad_content {
             continue;
         }
-        let Ok(mut entry) = zip.by_index(i) else { continue };
+        let Ok(mut entry) = zip.by_index(i) else {
+            continue;
+        };
         let mut buf = Vec::new();
         if entry.read_to_end(&mut buf).is_err() {
             continue;
@@ -368,7 +378,9 @@ fn pick_best_splash(candidates: &[Vec<u8>]) -> Option<Vec<u8>> {
 
     let mut scored: Vec<ScoredCandidate> = Vec::new();
     for bytes in candidates {
-        let Some(texture) = parse_texture(bytes) else { continue };
+        let Some(texture) = parse_texture(bytes) else {
+            continue;
+        };
         let width = texture.width();
         let height = texture.height();
         if width == 0 || height == 0 {
@@ -378,7 +390,11 @@ fn pick_best_splash(candidates: &[Vec<u8>]) -> Option<Vec<u8>> {
         let min = width.min(height) as f64;
         let deviation = (max / min - SPLASH_RATIO).abs();
         let pixels = (width as u64) * (height as u64);
-        scored.push(ScoredCandidate { bytes, deviation, pixels });
+        scored.push(ScoredCandidate {
+            bytes,
+            deviation,
+            pixels,
+        });
     }
 
     scored.sort_by(|a, b| {
@@ -407,48 +423,209 @@ fn parse_texture(bytes: &[u8]) -> Option<Texture> {
     }
 }
 
-// Vignette strength: 0.0 = no darkening at edges, 1.0 = pure black at edges.
-// 0.72 matches the visual weight of the native `skin-splash-darken.png` layer
-// (1280×720 RGBA radial gradient at 55% opacity) when viewed outside the client.
-const VIGNETTE_STRENGTH: f32 = 0.72;
+// Portrait background generation settings.
+// Custom skins usually only ship vertical loading/splash art, so for backgrounds
+// we create a blurred 16:9 atmosphere layer and blend the sharp portrait on top.
+const PORTRAIT_BG_BLUR: f32 = 20.0;
+const PORTRAIT_BG_DARKEN: f32 = 0.82;
+const PORTRAIT_FG_OPACITY: f32 = 0.86;
+const PORTRAIT_FEATHER_X: u32 = 180;
+const PORTRAIT_FEATHER_Y: u32 = 60;
 
-/// Fit-resizes an RGBA source into `BACKGROUND_WIDTH × BACKGROUND_HEIGHT`,
-/// letterboxing/pillarboxing with black if the aspect ratio differs, then
-/// applies a radial vignette matching League's own `skin-splash-darken.png`.
+// Final vignette strength over the generated 1280×720 background.
+const FINAL_VIGNETTE_STRENGTH: f32 = 0.38;
+
+// For true landscape images, keep the normal cover-crop behavior.
+const LANDSCAPE_BG_DARKEN: f32 = 0.84;
+
+/// Generates a 1280×720 champ-select background from either vertical or
+/// landscape source art.
+///
+/// Portrait source:
+/// - stretched/blurred/darkened full-screen background
+/// - sharp centered portrait blended with 2D feathering
+///
+/// Landscape source:
+/// - cover-cropped to 1280×720
+/// - lightly darkened
 fn compose_background_png(src: &RgbaImage, dest: &Path) -> Result<()> {
     let (src_w, src_h) = src.dimensions();
     if src_w == 0 || src_h == 0 {
         return Err(anyhow!("background source has zero dimension"));
     }
 
-    // Fit (contain): scale so the entire source fits inside the canvas.
-    let fit_scale = f32::min(
-        BACKGROUND_WIDTH as f32 / src_w as f32,
-        BACKGROUND_HEIGHT as f32 / src_h as f32,
-    );
-    let fit_w = ((src_w as f32) * fit_scale).round() as u32;
-    let fit_h = ((src_h as f32) * fit_scale).round() as u32;
-    let resized = imageops::resize(src, fit_w, fit_h, imageops::FilterType::Lanczos3);
+    let mut canvas = if src_h > src_w {
+        compose_background_from_portrait(src)
+    } else {
+        compose_background_from_landscape(src)
+    };
 
-    // Compose onto a black canvas, centered.
-    let mut canvas = RgbaImage::from_pixel(BACKGROUND_WIDTH, BACKGROUND_HEIGHT, image::Rgba([0, 0, 0, 255]));
-    let offset_x = (BACKGROUND_WIDTH.saturating_sub(fit_w)) / 2;
-    let offset_y = (BACKGROUND_HEIGHT.saturating_sub(fit_h)) / 2;
-    imageops::overlay(&mut canvas, &resized, offset_x as i64, offset_y as i64);
-
-    apply_vignette(&mut canvas);
+    apply_vignette(&mut canvas, FINAL_VIGNETTE_STRENGTH);
     save_rgba_as_png(&canvas, dest)
 }
 
-/// Burns a radial vignette into `img` in-place. Each pixel is darkened by
-/// `VIGNETTE_STRENGTH * t` where `t` is the normalised distance from centre
-/// (0.0 at centre → 1.0 at corner), giving the same dark-edge / bright-centre
-/// look as the League client's darken overlay.
-fn apply_vignette(img: &mut RgbaImage) {
+fn compose_background_from_portrait(src: &RgbaImage) -> RgbaImage {
+    // Background layer:
+    // Stretch the whole portrait to 16:9, then blur it. The stretch is hidden
+    // by the blur and keeps the source colors/composition across the full canvas.
+    let mut bg = imageops::resize(
+        src,
+        BACKGROUND_WIDTH,
+        BACKGROUND_HEIGHT,
+        imageops::FilterType::Lanczos3,
+    );
+
+    bg = imageops::blur(&bg, PORTRAIT_BG_BLUR);
+    darken_image(&mut bg, PORTRAIT_BG_DARKEN);
+
+    // Foreground layer:
+    // Keep the full portrait visible, scaled to canvas height.
+    let (src_w, src_h) = src.dimensions();
+    let fg_h = BACKGROUND_HEIGHT;
+    let scale = fg_h as f32 / src_h as f32;
+    let fg_w = ((src_w as f32) * scale).round().max(1.0) as u32;
+
+    let fg = imageops::resize(src, fg_w, fg_h, imageops::FilterType::Lanczos3);
+
+    let x = ((BACKGROUND_WIDTH as i64) - (fg_w as i64)) / 2;
+    let y = 0;
+
+    overlay_with_2d_feather(
+        &mut bg,
+        &fg,
+        x,
+        y,
+        PORTRAIT_FEATHER_X,
+        PORTRAIT_FEATHER_Y,
+        PORTRAIT_FG_OPACITY,
+    );
+
+    bg
+}
+
+fn compose_background_from_landscape(src: &RgbaImage) -> RgbaImage {
+    let (src_w, src_h) = src.dimensions();
+
+    // Cover resize: fill the whole 1280×720 area.
+    let cover_scale = f32::max(
+        BACKGROUND_WIDTH as f32 / src_w as f32,
+        BACKGROUND_HEIGHT as f32 / src_h as f32,
+    );
+
+    let cover_w = ((src_w as f32) * cover_scale).round().max(1.0) as u32;
+    let cover_h = ((src_h as f32) * cover_scale).round().max(1.0) as u32;
+
+    let covered = imageops::resize(src, cover_w, cover_h, imageops::FilterType::Lanczos3);
+
+    let crop_x = cover_w.saturating_sub(BACKGROUND_WIDTH) / 2;
+    let crop_y = cover_h.saturating_sub(BACKGROUND_HEIGHT) / 2;
+
+    let mut canvas = imageops::crop_imm(
+        &covered,
+        crop_x,
+        crop_y,
+        BACKGROUND_WIDTH,
+        BACKGROUND_HEIGHT,
+    )
+    .to_image();
+
+    darken_image(&mut canvas, LANDSCAPE_BG_DARKEN);
+    canvas
+}
+
+fn smoothstep01(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn edge_fade_factor(dist_to_edge: u32, feather: u32) -> f32 {
+    if feather == 0 {
+        return 1.0;
+    }
+
+    if dist_to_edge >= feather {
+        1.0
+    } else {
+        let t = dist_to_edge as f32 / feather as f32;
+        smoothstep01(t)
+    }
+}
+
+fn overlay_with_2d_feather(
+    bg: &mut RgbaImage,
+    fg: &RgbaImage,
+    x0: i64,
+    y0: i64,
+    feather_x: u32,
+    feather_y: u32,
+    opacity: f32,
+) {
+    let bg_w = bg.width() as i64;
+    let bg_h = bg.height() as i64;
+
+    let fg_w = fg.width();
+    let fg_h = fg.height();
+
+    for fy in 0..fg_h {
+        for fx in 0..fg_w {
+            let bx = x0 + fx as i64;
+            let by = y0 + fy as i64;
+
+            if bx < 0 || by < 0 || bx >= bg_w || by >= bg_h {
+                continue;
+            }
+
+            let src_px = fg.get_pixel(fx, fy);
+            let dst_px = bg.get_pixel_mut(bx as u32, by as u32);
+
+            let left_dist = fx;
+            let right_dist = fg_w.saturating_sub(1).saturating_sub(fx);
+            let top_dist = fy;
+            let bottom_dist = fg_h.saturating_sub(1).saturating_sub(fy);
+
+            let nearest_x_edge = left_dist.min(right_dist);
+            let nearest_y_edge = top_dist.min(bottom_dist);
+
+            let fade_x = edge_fade_factor(nearest_x_edge, feather_x);
+            let fade_y = edge_fade_factor(nearest_y_edge, feather_y);
+
+            // Multiplying both fades softens corners too.
+            let feather_alpha = fade_x * fade_y;
+
+            let src_alpha = (src_px[3] as f32 / 255.0) * feather_alpha * opacity.clamp(0.0, 1.0);
+
+            let inv_alpha = 1.0 - src_alpha;
+
+            dst_px[0] = ((src_px[0] as f32 * src_alpha) + (dst_px[0] as f32 * inv_alpha))
+                .clamp(0.0, 255.0) as u8;
+
+            dst_px[1] = ((src_px[1] as f32 * src_alpha) + (dst_px[1] as f32 * inv_alpha))
+                .clamp(0.0, 255.0) as u8;
+
+            dst_px[2] = ((src_px[2] as f32 * src_alpha) + (dst_px[2] as f32 * inv_alpha))
+                .clamp(0.0, 255.0) as u8;
+
+            dst_px[3] = 255;
+        }
+    }
+}
+
+fn darken_image(img: &mut RgbaImage, factor: f32) {
+    let factor = factor.clamp(0.0, 1.0);
+
+    for px in img.pixels_mut() {
+        px[0] = ((px[0] as f32) * factor).clamp(0.0, 255.0) as u8;
+        px[1] = ((px[1] as f32) * factor).clamp(0.0, 255.0) as u8;
+        px[2] = ((px[2] as f32) * factor).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn apply_vignette(img: &mut RgbaImage, strength: f32) {
+    let strength = strength.clamp(0.0, 1.0);
+
     let (w, h) = img.dimensions();
     let cx = w as f32 / 2.0;
     let cy = h as f32 / 2.0;
-    // Max possible distance from centre to corner, used to normalise t → [0,1].
     let max_dist = (cx * cx + cy * cy).sqrt();
 
     for (x, y, px) in img.enumerate_pixels_mut() {
@@ -456,10 +633,12 @@ fn apply_vignette(img: &mut RgbaImage) {
         let dy = y as f32 - cy;
         let dist = (dx * dx + dy * dy).sqrt();
         let t = (dist / max_dist).min(1.0);
-        let darken = 1.0 - VIGNETTE_STRENGTH * t;
-        px[0] = (px[0] as f32 * darken) as u8;
-        px[1] = (px[1] as f32 * darken) as u8;
-        px[2] = (px[2] as f32 * darken) as u8;
+
+        let darken = 1.0 - strength * t;
+
+        px[0] = ((px[0] as f32) * darken).clamp(0.0, 255.0) as u8;
+        px[1] = ((px[1] as f32) * darken).clamp(0.0, 255.0) as u8;
+        px[2] = ((px[2] as f32) * darken).clamp(0.0, 255.0) as u8;
         // alpha untouched
     }
 }
@@ -508,9 +687,8 @@ pub fn save_custom_tile(source_bytes: &[u8], dest: &Path) -> Result<()> {
 }
 
 /// Decodes a user-provided image file's bytes and writes it as the custom
-/// background PNG. Shares the cover-resize path with auto-generated
-/// backgrounds so both land on disk as raw 1920×1080 art — the native
-/// client applies its own darken/vignette chrome on top.
+/// background PNG using the same portrait-aware 1280×720 composition path
+/// as auto-generated backgrounds.
 pub fn save_custom_background(source_bytes: &[u8], dest: &Path) -> Result<()> {
     let src = decode_image_to_rgba(source_bytes)?;
     compose_background_png(&src, dest)
@@ -581,8 +759,7 @@ pub fn warm_all_cached_assets(
     }
 
     std::fs::create_dir_all(previews_dir).context("creating previews dir")?;
-    std::fs::create_dir_all(background_previews_dir)
-        .context("creating background previews dir")?;
+    std::fs::create_dir_all(background_previews_dir).context("creating background previews dir")?;
     std::fs::create_dir_all(tile_previews_dir).context("creating tile previews dir")?;
     std::fs::create_dir_all(icons_dir).context("creating champion icons dir")?;
 
@@ -695,14 +872,14 @@ pub fn warm_all_cached_assets(
 /// (308×560 portrait) rather than `/splash/` (1215×717 landscape) so the
 /// aspect ratio matches the textures extracted from mods.
 fn fetch_ddragon_splash(champion: &str, dest: &Path) -> Result<()> {
-    let sanitized = sanitize_champion_name(champion)
-        .ok_or_else(|| anyhow!("empty champion name"))?;
+    let sanitized =
+        sanitize_champion_name(champion).ok_or_else(|| anyhow!("empty champion name"))?;
     fetch_and_save_as_png(&ddragon_loading_url(&sanitized), dest)
 }
 
 fn fetch_ddragon_tile(champion: &str, dest: &Path) -> Result<()> {
-    let sanitized = sanitize_champion_name(champion)
-        .ok_or_else(|| anyhow!("empty champion name"))?;
+    let sanitized =
+        sanitize_champion_name(champion).ok_or_else(|| anyhow!("empty champion name"))?;
     fetch_and_save_as_png(&ddragon_tile_url(&sanitized), dest)
 }
 
@@ -746,7 +923,10 @@ fn fetch_image_bytes(url: &str) -> Result<Vec<u8>> {
         if !resp.status().is_success() {
             return Err(anyhow!("Data Dragon returned status {}", resp.status()));
         }
-        Ok(resp.bytes().context("reading Data Dragon response")?.to_vec())
+        Ok(resp
+            .bytes()
+            .context("reading Data Dragon response")?
+            .to_vec())
     })
     .join()
     .map_err(|_| anyhow!("image download thread panicked"))?

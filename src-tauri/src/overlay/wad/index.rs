@@ -129,9 +129,7 @@ impl Index {
                 }
                 let bytes = read_zip_entry(&mut zip, inner_name)?;
                 let hash = xxh64_from_path(inner_path);
-                archive
-                    .entries
-                    .insert(hash, EntryData::from_raw(bytes, 0));
+                archive.entries.insert(hash, EntryData::from_raw(bytes, 0));
             }
             if archive.entries.is_empty() {
                 continue;
@@ -158,9 +156,7 @@ impl Index {
                 }
                 let bytes = read_zip_entry(&mut zip, raw_name)?;
                 let hash = xxh64_from_path(inner_path);
-                archive
-                    .entries
-                    .insert(hash, EntryData::from_raw(bytes, 0));
+                archive.entries.insert(hash, EntryData::from_raw(bytes, 0));
             }
             if !archive.entries.is_empty() {
                 let mounted = Mounted {
@@ -195,11 +191,7 @@ impl Index {
         best
     }
 
-    pub fn find_by_mount_name_or_overlap(
-        &self,
-        name: &str,
-        archive: &Archive,
-    ) -> Option<&Mounted> {
+    pub fn find_by_mount_name_or_overlap(&self, name: &str, archive: &Archive) -> Option<&Mounted> {
         self.find_by_mount_name(name)
             .or_else(|| self.find_by_overlap(archive))
     }
@@ -293,8 +285,7 @@ impl Index {
     }
 
     pub fn write_to_directory(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir)
-            .with_context(|| format!("creating {}", dir.display()))?;
+        fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         for mounted in self.mounts.values() {
             let out_path = dir.join(&mounted.relpath);
             mounted.archive.write_to_file(&out_path)?;
@@ -313,9 +304,7 @@ impl Index {
     }
 
     fn cleanup_recursive(&self, dir: &Path) -> Result<()> {
-        for entry in fs::read_dir(dir)
-            .with_context(|| format!("reading {}", dir.display()))?
-        {
+        for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
             let entry = entry?;
             let path = entry.path();
             let file_type = entry.file_type()?;
@@ -343,9 +332,7 @@ fn add_from_game_folder_recursive(
     game_path: &Path,
     mounts: &mut BTreeMap<String, Mounted>,
 ) -> Result<()> {
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -371,11 +358,7 @@ fn add_from_game_folder_recursive(
                     mounts.insert(name, mounted);
                 }
                 Err(e) => {
-                    eprintln!(
-                        "[Overlay] skipping game WAD {}: {}",
-                        path.display(),
-                        e
-                    );
+                    eprintln!("[Overlay] skipping game WAD {}: {}", path.display(), e);
                 }
             }
         }

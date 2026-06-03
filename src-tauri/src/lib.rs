@@ -138,10 +138,9 @@ fn acquire_single_instance() -> Result<bool, String> {
 
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
     if handle.is_null() {
-        return Err(format!(
-            "CreateMutexW failed with error {}",
-            unsafe { GetLastError() }
-        ));
+        return Err(format!("CreateMutexW failed with error {}", unsafe {
+            GetLastError()
+        }));
     }
 
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
@@ -749,7 +748,10 @@ fn open_skins_folder(app: AppHandle) -> Result<(), String> {
     // Make sure the folder exists before trying to open it — on a fresh
     // install the app data dir may not yet be created.
     std::fs::create_dir_all(&paths.skins_dir).map_err(|e| e.to_string())?;
-    eprintln!("[Library] opening skins folder {}", paths.skins_dir.display());
+    eprintln!(
+        "[Library] opening skins folder {}",
+        paths.skins_dir.display()
+    );
     app.opener()
         .open_path(paths.skins_dir.to_string_lossy().to_string(), None::<&str>)
         .map_err(|e| e.to_string())
@@ -887,8 +889,7 @@ async fn import_skin(app: AppHandle, source: String) -> Result<(), String> {
         let warmed = warm_assets_for_skin(&task_app, &dest)?;
         eprintln!(
             "[Library] import complete id='{}' warmed_assets={}",
-            imported_id,
-            warmed
+            imported_id, warmed
         );
         regenerate_skin_index(&task_app);
         if warmed {
@@ -931,8 +932,7 @@ async fn import_skin_bytes(app: AppHandle, filename: String, bytes: Vec<u8>) -> 
         let warmed = warm_assets_for_skin(&task_app, &dest)?;
         eprintln!(
             "[Library] byte import complete id='{}' warmed_assets={}",
-            imported_id,
-            warmed
+            imported_id, warmed
         );
         regenerate_skin_index(&task_app);
         if warmed {
@@ -1022,11 +1022,7 @@ async fn set_custom_asset(
         regenerate_skin_index(&task_app);
         spawn_champ_select_refresh();
         let _ = task_app.emit("library:assets-updated", ());
-        eprintln!(
-            "[Library] custom {} updated for id='{}'",
-            kind_label,
-            id
-        );
+        eprintln!("[Library] custom {} updated for id='{}'", kind_label, id);
         Ok(())
     })
     .await
@@ -1183,7 +1179,10 @@ fn start_injection_services(app: &AppHandle) {
     let data_dir = match watermelon_data_dir(app) {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("[Inject] app data dir unavailable, injection disabled: {}", e);
+            eprintln!(
+                "[Inject] app data dir unavailable, injection disabled: {}",
+                e
+            );
             return;
         }
     };
@@ -1361,4 +1360,3 @@ pub fn run() {
             }
         });
 }
-

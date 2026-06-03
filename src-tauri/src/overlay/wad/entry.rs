@@ -179,7 +179,9 @@ impl EntryData {
             return cached;
         }
         let computed = xxh3_64(&self.inner.bytes);
-        self.inner.cached_checksum.store(computed, Ordering::Relaxed);
+        self.inner
+            .cached_checksum
+            .store(computed, Ordering::Relaxed);
         computed
     }
 
@@ -226,15 +228,9 @@ impl EntryData {
             EntryType::Raw => {
                 let compressed = zstd::bulk::compress(&self.inner.bytes, 3)
                     .context("zstd compression failed")?;
-                Ok(Self::from_zstd(
-                    compressed,
-                    self.inner.size_decompressed,
-                    0,
-                ))
+                Ok(Self::from_zstd(compressed, self.inner.size_decompressed, 0))
             }
-            EntryType::ZstdMulti | EntryType::Gzip => {
-                self.into_decompressed()?.into_compressed()
-            }
+            EntryType::ZstdMulti | EntryType::Gzip => self.into_decompressed()?.into_compressed(),
         }
     }
 

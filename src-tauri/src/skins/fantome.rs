@@ -40,8 +40,7 @@ pub struct FantomeMetadata {
 /// The champion is taken from `info.json`'s `Heroes` field when present,
 /// otherwise derived from the `WAD/{Champion}.wad.client` entry name.
 pub fn read(path: &Path) -> Result<FantomeMetadata> {
-    let file = File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?;
+    let file = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let mut zip = ZipArchive::new(file).context("reading zip archive")?;
 
     let info = read_info_json(&mut zip).unwrap_or_default();
@@ -78,7 +77,9 @@ fn find_champion_from_wad_entries(zip: &mut ZipArchive<File>) -> Option<String> 
             Ok(file) => file.name().to_string(),
             Err(_) => continue,
         };
-        let Some(stripped) = name.strip_prefix("WAD/") else { continue };
+        let Some(stripped) = name.strip_prefix("WAD/") else {
+            continue;
+        };
         // Packed form: "WAD/Hecarim.wad.client" — the entry IS the WAD file.
         if let Some(champ) = stripped.strip_suffix(".wad.client") {
             if !champ.is_empty() {

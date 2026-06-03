@@ -4,8 +4,8 @@ use std::ptr;
 
 use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_SZ, RegCloseKey,
-    RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    RegCloseKey, RegCreateKeyExW, RegDeleteTreeW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_SZ,
 };
 
 const SUBKEY: &str = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\LeagueClientUx.exe";
@@ -74,13 +74,7 @@ pub fn read_debugger_value() -> Result<Option<String>> {
 
     unsafe {
         let mut key: HKEY = ptr::null_mut();
-        let open = RegOpenKeyExW(
-            HKEY_LOCAL_MACHINE,
-            subkey_w.as_ptr(),
-            0,
-            KEY_READ,
-            &mut key,
-        );
+        let open = RegOpenKeyExW(HKEY_LOCAL_MACHINE, subkey_w.as_ptr(), 0, KEY_READ, &mut key);
         if open == ERROR_FILE_NOT_FOUND {
             return Ok(None);
         }
@@ -105,7 +99,10 @@ pub fn read_debugger_value() -> Result<Option<String>> {
         }
         if probe != ERROR_SUCCESS {
             let _ = RegCloseKey(key);
-            return Err(anyhow!("RegQueryValueExW (probe) failed with code {}", probe));
+            return Err(anyhow!(
+                "RegQueryValueExW (probe) failed with code {}",
+                probe
+            ));
         }
         if value_type != REG_SZ {
             let _ = RegCloseKey(key);
@@ -131,10 +128,7 @@ pub fn read_debugger_value() -> Result<Option<String>> {
         }
 
         // Strip the trailing null(s) the registry stores as part of REG_SZ.
-        let end = buffer
-            .iter()
-            .position(|&c| c == 0)
-            .unwrap_or(buffer.len());
+        let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
         Ok(Some(String::from_utf16_lossy(&buffer[..end])))
     }
 }

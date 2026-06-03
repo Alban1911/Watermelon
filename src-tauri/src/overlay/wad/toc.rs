@@ -81,11 +81,18 @@ impl Toc {
         let major = src[2];
         let minor = src[3];
         if major != 3 {
-            return Err(anyhow!("unsupported WAD major version: {}.{}", major, minor));
+            return Err(anyhow!(
+                "unsupported WAD major version: {}.{}",
+                major,
+                minor
+            ));
         }
 
         if src.len() < HEADER_SIZE {
-            return Err(anyhow!("file too small for v3 header ({} bytes)", src.len()));
+            return Err(anyhow!(
+                "file too small for v3 header ({} bytes)",
+                src.len()
+            ));
         }
         let mut signature = [0u8; 256];
         signature.copy_from_slice(&src[4..260]);

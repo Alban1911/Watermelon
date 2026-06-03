@@ -66,8 +66,8 @@ impl Archive {
     }
 
     pub fn read_from_file(path: &Path) -> Result<Self> {
-        let bytes = fs::read(path)
-            .with_context(|| format!("reading WAD file {}", path.display()))?;
+        let bytes =
+            fs::read(path).with_context(|| format!("reading WAD file {}", path.display()))?;
         Self::read_from_bytes(&bytes)
     }
 
@@ -140,7 +140,8 @@ impl Archive {
         let data_start = HEADER_SIZE + ENTRY_SIZE * desc_count as usize;
         let mut data_buf: Vec<u8> = Vec::new();
         let mut toc_entries: Vec<(u64, EntryLoc)> = Vec::with_capacity(self.entries.len());
-        let mut loc_by_checksum: HashMap<u64, EntryLoc> = HashMap::with_capacity(self.entries.len());
+        let mut loc_by_checksum: HashMap<u64, EntryLoc> =
+            HashMap::with_capacity(self.entries.len());
 
         for (name, entry) in &self.entries {
             let optimized = entry.into_optimal()?;
@@ -156,7 +157,12 @@ impl Archive {
                     || size >= MAX_ENTRY_SIZE
                     || size_decompressed >= MAX_ENTRY_SIZE
                 {
-                    return Err(anyhow!("WAD entry exceeds 4 GiB limit (offset {} size {} size_decompressed {})", offset, size, size_decompressed));
+                    return Err(anyhow!(
+                        "WAD entry exceeds 4 GiB limit (offset {} size {} size_decompressed {})",
+                        offset,
+                        size,
+                        size_decompressed
+                    ));
                 }
                 data_buf.extend_from_slice(optimized.bytes());
                 let new_loc = EntryLoc {
@@ -193,8 +199,7 @@ impl Archive {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating parent dir for {}", path.display()))?;
         }
-        fs::write(path, &out)
-            .with_context(|| format!("writing WAD file {}", path.display()))?;
+        fs::write(path, &out).with_context(|| format!("writing WAD file {}", path.display()))?;
         Ok(())
     }
 
@@ -230,10 +235,7 @@ impl Archive {
     {
         let matches = overlap_keys(&self.entries, &other.entries);
         for name in matches {
-            if let (Some(lv), Some(rv)) = (
-                self.entries.get_mut(&name),
-                other.entries.get(&name),
-            ) {
+            if let (Some(lv), Some(rv)) = (self.entries.get_mut(&name), other.entries.get(&name)) {
                 f(name, lv, rv);
             }
         }
@@ -301,8 +303,8 @@ fn overlap_keys(lhs: &EntryMap, rhs: &EntryMap) -> Vec<u64> {
 }
 
 fn pack_recursive(root: &Path, current: &Path, archive: &mut Archive) -> Result<()> {
-    for entry in fs::read_dir(current)
-        .with_context(|| format!("reading directory {}", current.display()))?
+    for entry in
+        fs::read_dir(current).with_context(|| format!("reading directory {}", current.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -316,8 +318,7 @@ fn pack_recursive(root: &Path, current: &Path, archive: &mut Archive) -> Result<
                 .to_string_lossy()
                 .replace('\\', "/");
             let hash = xxh64_from_path(&rel);
-            let bytes = fs::read(&path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let bytes = fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             archive.entries.insert(hash, EntryData::from_raw(bytes, 0));
         }
     }

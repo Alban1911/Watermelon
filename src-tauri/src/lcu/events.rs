@@ -20,9 +20,7 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
     eprintln!("[LCU] Loaded {} champion aliases", alias_map.len());
 
     let url = format!("wss://127.0.0.1:{}/", info.port);
-    let mut request = url
-        .into_client_request()
-        .context("building WS request")?;
+    let mut request = url.into_client_request().context("building WS request")?;
     request
         .headers_mut()
         .insert("Authorization", info.auth_header.parse()?);
@@ -36,10 +34,9 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
         .context("building TLS connector")?;
     let connector = Connector::NativeTls(tls);
 
-    let (mut ws, _resp) =
-        connect_async_tls_with_config(request, None, false, Some(connector))
-            .await
-            .context("connecting WebSocket")?;
+    let (mut ws, _resp) = connect_async_tls_with_config(request, None, false, Some(connector))
+        .await
+        .context("connecting WebSocket")?;
     eprintln!("[LCU] WebSocket connected");
 
     // WAMP v1 SUBSCRIBE: [5, "topic"]. OnJsonApiEvent_<uri> is the LCU's
@@ -70,7 +67,9 @@ pub async fn run(info: &LcuInfo, client: &LcuClient, app: &AppHandle) -> Result<
         let Ok(parsed) = serde_json::from_str::<Value>(text.as_str()) else {
             continue;
         };
-        let Some(arr) = parsed.as_array() else { continue };
+        let Some(arr) = parsed.as_array() else {
+            continue;
+        };
         // WAMP v1 EVENT: [8, topic, payload]
         if arr.len() != 3 || arr[0].as_i64() != Some(8) {
             continue;
@@ -146,10 +145,7 @@ async fn fetch_alias_map(client: &LcuClient) -> Result<HashMap<i64, String>> {
 
 /// Returns the alias (e.g. "Hecarim") of the champion the local player currently
 /// has on their cell, or `None` if they haven't picked yet.
-fn extract_local_champion(
-    data: &Value,
-    alias_map: &HashMap<i64, String>,
-) -> Option<String> {
+fn extract_local_champion(data: &Value, alias_map: &HashMap<i64, String>) -> Option<String> {
     let local_cell = data.get("localPlayerCellId")?.as_i64()?;
     let my_team = data.get("myTeam")?.as_array()?;
     let me = my_team

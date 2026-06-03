@@ -19,9 +19,10 @@ impl SkinState {
         if content.trim().is_empty() {
             return Ok(Self::default());
         }
-        let list: Vec<String> =
-            serde_json::from_str(&content).context("parsing state file")?;
-        Ok(Self { enabled: list.into_iter().collect() })
+        let list: Vec<String> = serde_json::from_str(&content).context("parsing state file")?;
+        Ok(Self {
+            enabled: list.into_iter().collect(),
+        })
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {

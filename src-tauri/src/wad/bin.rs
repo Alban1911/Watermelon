@@ -19,7 +19,9 @@ pub fn collect_strings(data: &[u8]) -> Vec<String> {
     let mut r = Reader::new(data);
     let mut out = Vec::new();
 
-    let Some(magic) = r.read_bytes(4) else { return out };
+    let Some(magic) = r.read_bytes(4) else {
+        return out;
+    };
     // PTCH files reference/patch other bins; we only handle PROP.
     if magic != b"PROP" {
         return out;
@@ -27,7 +29,9 @@ pub fn collect_strings(data: &[u8]) -> Vec<String> {
     let Some(version) = r.u32() else { return out };
 
     if version >= 2 {
-        let Some(link_count) = r.u32() else { return out };
+        let Some(link_count) = r.u32() else {
+            return out;
+        };
         for _ in 0..link_count {
             if r.read_string().is_none() {
                 return out;
@@ -35,7 +39,9 @@ pub fn collect_strings(data: &[u8]) -> Vec<String> {
         }
     }
 
-    let Some(entry_count) = r.u32() else { return out };
+    let Some(entry_count) = r.u32() else {
+        return out;
+    };
     // Entry hashes come first, then the entries themselves.
     for _ in 0..entry_count {
         if r.u32().is_none() {
@@ -50,7 +56,9 @@ pub fn collect_strings(data: &[u8]) -> Vec<String> {
         if r.u32().is_none() {
             return out;
         } // class hash
-        let Some(field_count) = r.u16() else { return out };
+        let Some(field_count) = r.u16() else {
+            return out;
+        };
         for _ in 0..field_count {
             if r.u32().is_none() {
                 return out;
@@ -73,25 +81,27 @@ fn read_value(r: &mut Reader, ty: u8, out: &mut Vec<String>, depth: u32) -> bool
     }
     match ty {
         // Primitives — fixed sizes we just skip past.
-        0x00 => true,                       // none
-        0x01 | 0x02 | 0x03 => r.skip(1),    // bool / i8 / u8
-        0x04 | 0x05 => r.skip(2),           // i16 / u16
-        0x06 | 0x07 | 0x0A => r.skip(4),    // i32 / u32 / f32
-        0x08 | 0x09 => r.skip(8),           // i64 / u64
-        0x0B => r.skip(8),                  // vec2
-        0x0C => r.skip(12),                 // vec3
-        0x0D => r.skip(16),                 // vec4
-        0x0E => r.skip(64),                 // mtx44
-        0x0F => r.skip(4),                  // rgba
-        0x11 => r.skip(4),                  // hash (u32 FNV)
-        0x12 => r.skip(8),                  // file (u64 xxhash path ref)
-        0x84 => r.skip(4),                  // link (u32)
-        0x87 => r.skip(1),                  // flag (u8)
+        0x00 => true,                    // none
+        0x01 | 0x02 | 0x03 => r.skip(1), // bool / i8 / u8
+        0x04 | 0x05 => r.skip(2),        // i16 / u16
+        0x06 | 0x07 | 0x0A => r.skip(4), // i32 / u32 / f32
+        0x08 | 0x09 => r.skip(8),        // i64 / u64
+        0x0B => r.skip(8),               // vec2
+        0x0C => r.skip(12),              // vec3
+        0x0D => r.skip(16),              // vec4
+        0x0E => r.skip(64),              // mtx44
+        0x0F => r.skip(4),               // rgba
+        0x11 => r.skip(4),               // hash (u32 FNV)
+        0x12 => r.skip(8),               // file (u64 xxhash path ref)
+        0x84 => r.skip(4),               // link (u32)
+        0x87 => r.skip(1),               // flag (u8)
 
         // String — u16 length + bytes. This is what we're collecting.
         0x10 => {
             let Some(len) = r.u16() else { return false };
-            let Some(bytes) = r.read_bytes(len as usize) else { return false };
+            let Some(bytes) = r.read_bytes(len as usize) else {
+                return false;
+            };
             if let Ok(s) = std::str::from_utf8(bytes) {
                 out.push(s.to_string());
             }
@@ -115,7 +125,9 @@ fn read_value(r: &mut Reader, ty: u8, out: &mut Vec<String>, depth: u32) -> bool
         }
         0x82 => {
             // pointer: class_hash (u32); if 0, no payload. Otherwise embed.
-            let Some(class_hash) = r.u32() else { return false };
+            let Some(class_hash) = r.u32() else {
+                return false;
+            };
             if class_hash == 0 {
                 return true;
             }
@@ -167,7 +179,9 @@ fn read_embed_body(r: &mut Reader, out: &mut Vec<String>, depth: u32) -> bool {
     if r.u32().is_none() {
         return false;
     }
-    let Some(field_count) = r.u16() else { return false };
+    let Some(field_count) = r.u16() else {
+        return false;
+    };
     for _ in 0..field_count {
         if r.u32().is_none() {
             return false;
@@ -201,7 +215,9 @@ impl<'a> Reader<'a> {
     }
 
     fn skip(&mut self, n: usize) -> bool {
-        let Some(end) = self.pos.checked_add(n) else { return false };
+        let Some(end) = self.pos.checked_add(n) else {
+            return false;
+        };
         if end > self.data.len() {
             return false;
         }

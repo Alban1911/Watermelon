@@ -51,8 +51,7 @@ impl Mounted {
             })?
             .to_path_buf();
 
-        let bytes = fs::read(path)
-            .with_context(|| format!("reading {}", path.display()))?;
+        let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         let toc = Toc::read(&bytes)?;
         if toc.major != LATEST_MAJOR || toc.minor != LATEST_MINOR {
             return Err(anyhow!(
@@ -86,10 +85,7 @@ impl Mounted {
                 )
             })?
             .to_path_buf();
-        let filename = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if !filename.ends_with(".wad.client") {
             return Err(anyhow!("not a .wad.client file: {}", path.display()));
         }
@@ -165,9 +161,7 @@ impl Mounted {
                 count += 1;
                 return true;
             }
-            if let (Ok(old_dec), Ok(new_dec)) =
-                (old.into_decompressed(), new.into_decompressed())
-            {
+            if let (Ok(old_dec), Ok(new_dec)) = (old.into_decompressed(), new.into_decompressed()) {
                 if old_dec.checksum() == new_dec.checksum() {
                     count += 1;
                     return true;

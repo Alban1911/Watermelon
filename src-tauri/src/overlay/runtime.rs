@@ -103,7 +103,11 @@ impl HoverRuntime {
                 return;
             }
         };
-        let mut latest = self.inner.latest.lock().expect("hover runtime latest lock poisoned");
+        let mut latest = self
+            .inner
+            .latest
+            .lock()
+            .expect("hover runtime latest lock poisoned");
         let replaced = latest.is_some();
         *latest = Some(request);
         self.inner.wake.notify_one();
@@ -117,7 +121,11 @@ impl HoverRuntime {
     /// the prepared overlay must stay on disk.
     pub fn clear(&self) {
         eprintln!("[Inject] explicit clear -> queue clear");
-        let mut latest = self.inner.latest.lock().expect("hover runtime latest lock poisoned");
+        let mut latest = self
+            .inner
+            .latest
+            .lock()
+            .expect("hover runtime latest lock poisoned");
         *latest = Some(HoverRequest::Clear);
         self.inner.wake.notify_one();
     }
@@ -154,10 +162,7 @@ impl Inner {
                 crate::patcher::stop();
                 match clear_overlay_dir(&self.overlay_dir) {
                     Ok(()) => {
-                        eprintln!(
-                            "[Inject] cleared {}",
-                            self.overlay_dir.display()
-                        );
+                        eprintln!("[Inject] cleared {}", self.overlay_dir.display());
                         let _ = self.app.emit("overlay:cleared", ());
                     }
                     Err(e) => eprintln!("[Inject] clear failed: {}", e),
@@ -182,23 +187,18 @@ impl Inner {
                             ),
                             Err(e) => {
                                 eprintln!("[Patcher] start failed: {}", e);
-                                let _ = self.app.emit(
-                                    "overlay:patcher-failed",
-                                    format!("{}: {}", skin_id, e),
-                                );
+                                let _ = self
+                                    .app
+                                    .emit("overlay:patcher-failed", format!("{}: {}", skin_id, e));
                             }
                         }
                         let _ = self.app.emit("overlay:built", &stem);
                     }
                     Err(e) => {
-                        eprintln!(
-                            "[Inject] === BUILD FAILED === skin={} error={}",
-                            skin_id, e
-                        );
-                        let _ = self.app.emit(
-                            "overlay:failed",
-                            format!("{}: {}", skin_id, e),
-                        );
+                        eprintln!("[Inject] === BUILD FAILED === skin={} error={}", skin_id, e);
+                        let _ = self
+                            .app
+                            .emit("overlay:failed", format!("{}: {}", skin_id, e));
                     }
                 }
             }
@@ -206,7 +206,10 @@ impl Inner {
     }
 
     fn wait_for_request(&self) -> HoverRequest {
-        let mut latest = self.latest.lock().expect("hover runtime latest lock poisoned");
+        let mut latest = self
+            .latest
+            .lock()
+            .expect("hover runtime latest lock poisoned");
         loop {
             if let Some(req) = latest.take() {
                 return req;
@@ -221,11 +224,7 @@ impl Inner {
     fn build_for_skin(&self, skin_id: i64) -> Result<String> {
         eprintln!("[Inject] === BUILD START === skin={}", skin_id);
         eprintln!("[Inject] step 1/3: resolve skin id → fantome");
-        let fantome = resolve_custom_skin_id(
-            &self.skins_index_path,
-            &self.skins_dir,
-            skin_id,
-        )?;
+        let fantome = resolve_custom_skin_id(&self.skins_index_path, &self.skins_dir, skin_id)?;
         let stem = fantome
             .file_stem()
             .and_then(|s| s.to_str())
@@ -259,10 +258,7 @@ impl Inner {
         {
             let cache = self.game_paths.lock().expect("game paths cache poisoned");
             if let Some(index) = cache.as_ref() {
-                eprintln!(
-                    "[Inject] game paths cache hit ({} mounts)",
-                    index.len()
-                );
+                eprintln!("[Inject] game paths cache hit ({} mounts)", index.len());
                 return Ok(Arc::clone(index));
             }
         }
@@ -297,7 +293,10 @@ impl Inner {
 
 fn discover_game_path() -> Result<PathBuf> {
     let install = if let Some(saved) = crate::saved_league_install_dir() {
-        eprintln!("[Inject] using saved League install dir {}", saved.display());
+        eprintln!(
+            "[Inject] using saved League install dir {}",
+            saved.display()
+        );
         saved
     } else {
         let detected = crate::lcu::process::find_install_directory()
@@ -338,8 +337,8 @@ pub fn clear_overlay_dir(overlay_dir: &Path) -> Result<()> {
     restore_map_cache_patches(overlay_dir)?;
     let mut removed = 0usize;
     let mut preserved = 0usize;
-    for entry in fs::read_dir(overlay_dir)
-        .with_context(|| format!("reading {}", overlay_dir.display()))?
+    for entry in
+        fs::read_dir(overlay_dir).with_context(|| format!("reading {}", overlay_dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();
@@ -367,9 +366,7 @@ pub fn clear_overlay_dir(overlay_dir: &Path) -> Result<()> {
 
 fn clear_overlay_subdir(dir: &Path, overlay_dir: &Path) -> Result<usize> {
     let mut removed = 0usize;
-    for entry in fs::read_dir(dir)
-        .with_context(|| format!("reading {}", dir.display()))?
-    {
+    for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
         let file_type = entry.file_type()?;
@@ -493,7 +490,10 @@ fn resolve_custom_skin_id(
 
     let fantome = skins_dir.join(format!("{}.fantome", file_stem));
     if !fantome.is_file() {
-        return Err(anyhow!("fantome file missing on disk: {}", fantome.display()));
+        return Err(anyhow!(
+            "fantome file missing on disk: {}",
+            fantome.display()
+        ));
     }
     Ok(fantome)
 }
@@ -513,8 +513,7 @@ fn read_skins_index(path: &Path) -> Result<Value> {
 }
 
 fn try_read(path: &Path) -> Result<Value> {
-    let bytes = fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let value = serde_json::from_slice::<Value>(&bytes)
         .with_context(|| format!("parsing {}", path.display()))?;
     Ok(value)

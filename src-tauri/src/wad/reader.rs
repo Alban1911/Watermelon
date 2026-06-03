@@ -71,8 +71,7 @@ impl<'a> WadReader<'a> {
             return Err(anyhow!("unsupported WAD version {}.x", version_major));
         }
 
-        let entry_count =
-            u32::from_le_bytes(data[268..272].try_into().unwrap()) as usize;
+        let entry_count = u32::from_le_bytes(data[268..272].try_into().unwrap()) as usize;
         let toc_end = HEADER_SIZE + entry_count * TOC_ENTRY_SIZE;
         if data.len() < toc_end {
             return Err(anyhow!(
@@ -136,18 +135,12 @@ impl<'a> WadReader<'a> {
                 zstd::bulk::decompress(compressed, entry.size_decompressed as usize)
                     .context("zstd decompression failed")
             }
-            CompressionType::Gzip => {
-                Err(anyhow!("gzip compression not yet supported"))
-            }
+            CompressionType::Gzip => Err(anyhow!("gzip compression not yet supported")),
             CompressionType::ZstdChunked => {
                 Err(anyhow!("zstd-chunked compression not yet supported"))
             }
-            CompressionType::Satellite => {
-                Err(anyhow!("satellite entry type not supported"))
-            }
-            CompressionType::Unknown(n) => {
-                Err(anyhow!("unknown compression type: {}", n))
-            }
+            CompressionType::Satellite => Err(anyhow!("satellite entry type not supported")),
+            CompressionType::Unknown(n) => Err(anyhow!("unknown compression type: {}", n)),
         }
     }
 }
